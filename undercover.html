@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>🎭 Undercover Mr. White Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      @keyframes glow {
+        0%, 100% { text-shadow: 0 0 20px #9333ea, 0 0 40px #a855f7; }
+        50% { text-shadow: 0 0 40px #c084fc, 0 0 80px #8b5cf6; }
+      }
+      .glow { animation: glow 2s infinite alternate; }
+      .fade-in { animation: fadeIn 0.6s ease-in-out; }
+      @keyframes fadeIn {
+        from { opacity: 0; transform: scale(0.95); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      .neon-border {
+        border: 2px solid rgba(147, 51, 234, 0.4);
+        box-shadow: 0 0 20px rgba(147, 51, 234, 0.4), 0 0 40px rgba(126, 34, 206, 0.3);
+      }
+    </style>
+  </head>
+
+  <body class="bg-gradient-to-br from-gray-900 via-purple-950 to-black text-white flex items-center justify-center min-h-screen font-sans">
+    <div id="app" class="max-w-lg w-full neon-border rounded-2xl shadow-2xl p-8 text-center bg-opacity-80 bg-gray-900 backdrop-blur-lg fade-in">
+      <h1 class="text-4xl font-extrabold glow mb-4 tracking-wide">🎭 UNDERCOVER</h1>
+      <p class="text-purple-300 italic mb-6">Descubre al impostor... o sé Mr. White y sobrevive 🔥</p>
+
+      <!-- 🧍 Pantalla de jugadores -->
+      <div id="setup" class="space-y-4">
+        <input id="playerName" type="text" placeholder="✍️ Escribe tu nombre"
+          class="w-full p-3 rounded-lg bg-gray-800 text-white focus:ring-2 focus:ring-purple-500 focus:outline-none">
+        <button onclick="addPlayer()"
+          class="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:scale-105 transition-all p-3 rounded-lg font-semibold">➕ Agregar jugador</button>
+        <ul id="playerList" class="text-left list-disc list-inside text-purple-300 pl-4"></ul>
+        <button onclick="startGame()"
+          class="w-full bg-gradient-to-r from-green-500 to-emerald-500 hover:scale-105 transition-all p-3 rounded-lg font-semibold mt-4">🚀 Iniciar juego</button>
+      </div>
+
+      <!-- 🕵️‍♂️ Pantalla de revelación -->
+      <div id="reveal" class="hidden space-y-6 fade-in">
+        <h2 id="revealName" class="text-2xl font-semibold text-fuchsia-300"></h2>
+        <button id="showWordBtn" onclick="showWord()"
+          class="bg-gradient-to-r from-indigo-600 to-purple-700 hover:scale-105 px-6 py-3 rounded-lg font-semibold transition-all">👀 Mostrar palabra</button>
+        <p id="playerWord" class="text-4xl font-extrabold text-fuchsia-400 hidden glow"></p>
+        <button id="nextPlayerBtn" onclick="nextPlayer()"
+          class="bg-gray-700 hover:scale-105 px-6 py-3 rounded-lg font-semibold hidden transition-all">👉 Siguiente jugador</button>
+      </div>
+
+      <!-- 💬 Pantalla de descripciones -->
+      <div id="describe" class="hidden fade-in space-y-6">
+        <h2 class="text-2xl font-bold text-fuchsia-400">🎙️ Ronda de Descripciones</h2>
+        <p id="turnInfo" class="text-lg text-purple-300"></p>
+        <button id="nextDescBtn" onclick="nextDescription()"
+          class="bg-gradient-to-r from-blue-600 to-indigo-600 hover:scale-105 px-6 py-3 rounded-lg font-semibold">➡️ Siguiente jugador</button>
+      </div>
+
+      <!-- 🗳️ Pantalla de votación -->
+      <div id="vote" class="hidden fade-in">
+        <h2 class="text-2xl font-bold text-pink-400 mb-4">🗳️ Votación</h2>
+        <p class="text-gray-300 mb-4">Elijan a quién eliminar esta ronda 👇</p>
+        <div id="voteList" class="grid grid-cols-2 gap-3"></div>
+      </div>
+
+      <!-- 💀 Pantalla de eliminación -->
+      <div id="elimination" class="hidden fade-in space-y-4">
+        <h2 id="eliminatedMsg" class="text-2xl font-bold text-red-400"></h2>
+        <p id="remaining" class="text-gray-300"></p>
+        <button onclick="nextRound()"
+          class="bg-gradient-to-r from-yellow-500 to-orange-500 hover:scale-105 px-5 py-3 rounded-lg font-semibold">➡️ Siguiente ronda</button>
+      </div>
+
+      <!-- 🏆 Pantalla final -->
+      <div id="end" class="hidden fade-in space-y-4">
+        <h2 id="endTitle" class="text-3xl font-bold text-emerald-400 glow"></h2>
+        <p id="endMessage" class="text-gray-300"></p>
+        <button onclick="resetGame()"
+          class="bg-gradient-to-r from-purple-500 to-indigo-500 hover:scale-105 px-5 py-3 rounded-lg font-semibold">🔁 Reiniciar</button>
+      </div>
+    </div>
+
+    <script>
+      const players = [];
+      let roles = [];
+      let currentIndex = 0;
+      let descOrder = [];
+
+      const wordPairs = [
+        { normal: "gato", undercover: "perro", white: "?" },
+        { normal: "carro", undercover: "moto", white: "?" },
+        { normal: "mar", undercover: "océano", white: "?" },
+        { normal: "celular", undercover: "teléfono", white: "?" },
+        { normal: "sol", undercover: "luna", white: "?" },
+        { normal: "Netflix", undercover: "Disney+", white: "?" },
+      ];
+
+      function addPlayer() {
+        const nameInput = document.getElementById("playerName");
+        const name = nameInput.value.trim();
+        if (!name) return alert("⚠️ Escribe un nombre");
+        players.push({ name, alive: true });
+        nameInput.value = "";
+        renderPlayers();
+      }
+
+      function renderPlayers() {
+        document.getElementById("playerList").innerHTML =
+          players.map(p => `<li>${p.name}</li>`).join("");
+      }
+
+      function startGame() {
+        if (players.length < 4) return alert("👥 Se necesitan al menos 4 jugadores.");
+
+        const pair = wordPairs[Math.floor(Math.random() * wordPairs.length)];
+        const undercoverIndex = Math.floor(Math.random() * players.length);
+        let whiteIndex = undercoverIndex;
+        while (whiteIndex === undercoverIndex)
+          whiteIndex = Math.floor(Math.random() * players.length);
+
+        roles = players.map((p, i) => ({
+          name: p.name,
+          alive: true,
+          role: i === undercoverIndex ? "Undercover" : i === whiteIndex ? "Mr. White" : "Normal",
+          word: i === undercoverIndex ? pair.undercover : i === whiteIndex ? "Mr. White" : pair.normal
+        }));
+
+        document.getElementById("setup").classList.add("hidden");
+        document.getElementById("reveal").classList.remove("hidden");
+        currentIndex = 0;
+        updateRevealScreen();
+      }
+
+      function updateRevealScreen() {
+        const player = roles[currentIndex];
+        document.getElementById("revealName").textContent = `${player.name}, toca para ver tu palabra 🔒`;
+        document.getElementById("playerWord").classList.add("hidden");
+        document.getElementById("showWordBtn").classList.remove("hidden");
+        document.getElementById("nextPlayerBtn").classList.add("hidden");
+      }
+
+      function showWord() {
+        const player = roles[currentIndex];
+        document.getElementById("playerWord").textContent =
+          player.word === "Mr. White" ? "🤫 Mr. White" : player.word;
+        document.getElementById("playerWord").classList.remove("hidden");
+        document.getElementById("showWordBtn").classList.add("hidden");
+        document.getElementById("nextPlayerBtn").classList.remove("hidden");
+      }
+
+      function nextPlayer() {
+        currentIndex++;
+        if (currentIndex >= roles.length) {
+          document.getElementById("reveal").classList.add("hidden");
+          startDescriptionRound();
+        } else {
+          updateRevealScreen();
+        }
+      }
+
+      function startDescriptionRound() {
+        descOrder = shuffle(roles.filter(r => r.alive));
+        currentIndex = 0;
+        document.getElementById("describe").classList.remove("hidden");
+        updateDescriptionTurn();
+      }
+
+      function updateDescriptionTurn() {
+        const player = descOrder[currentIndex];
+        document.getElementById("turnInfo").textContent =
+          `👉 Turno de ${player.name} para describir su palabra.`;
+      }
+
+      function nextDescription() {
+        currentIndex++;
+        if (currentIndex >= descOrder.length) {
+          document.getElementById("describe").classList.add("hidden");
+          document.getElementById("vote").classList.remove("hidden");
+          renderVoteScreen();
+        } else {
+          updateDescriptionTurn();
+        }
+      }
+
+      function renderVoteScreen() {
+        const voteList = document.getElementById("voteList");
+        const alivePlayers = roles.filter(r => r.alive);
+        voteList.innerHTML = alivePlayers
+          .map(p => `
+          <button onclick="eliminate('${p.name}')"
+            class="bg-gray-800 hover:bg-purple-700 transition-all rounded-lg p-3 font-semibold text-white">
+            ${p.name}
+          </button>`).join("");
+      }
+
+      function eliminate(name) {
+        const player = roles.find(r => r.name === name);
+        player.alive = false;
+
+        document.getElementById("vote").classList.add("hidden");
+        document.getElementById("elimination").classList.remove("hidden");
+        document.getElementById("eliminatedMsg").textContent = `💀 ${player.name} fue eliminado`;
+
+        const remaining = roles.filter(r => r.alive).length;
+        document.getElementById("remaining").textContent = `Quedan ${remaining} jugadores en juego.`;
+
+        checkWinner();
+      }
+
+      function nextRound() {
+        document.getElementById("elimination").classList.add("hidden");
+        startDescriptionRound();
+      }
+
+      function checkWinner() {
+        const alive = roles.filter(r => r.alive);
+        const underAlive = alive.find(r => r.role === "Undercover");
+        const whiteAlive = alive.find(r => r.role === "Mr. White");
+        const normals = alive.filter(r => r.role === "Normal");
+
+        if (!underAlive && !whiteAlive)
+          return endGame("🏆 ¡Ganan los ciudadanos!", "El Undercover y Mr. White fueron eliminados.");
+        if (alive.length <= 2 && (underAlive || whiteAlive))
+          return endGame("💀 ¡Gana el impostor!", "El Undercover o Mr. White sobrevivieron hasta el final.");
+      }
+
+      function endGame(title, msg) {
+        document.getElementById("elimination").classList.add("hidden");
+        document.getElementById("vote").classList.add("hidden");
+        document.getElementById("end").classList.remove("hidden");
+        document.getElementById("endTitle").textContent = title;
+        document.getElementById("endMessage").textContent = msg;
+      }
+
+      function resetGame() {
+        players.length = 0;
+        roles = [];
+        currentIndex = 0;
+        document.getElementById("end").classList.add("hidden");
+        document.getElementById("setup").classList.remove("hidden");
+        document.getElementById("playerList").innerHTML = "";
+      }
+
+      function shuffle(array) {
+        for (let i = array.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+      }
+    </script>
+  </body>
+</html>
