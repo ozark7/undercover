@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>🎭 Undercover Online - Multiplayer</title>
+  <title>🎭 Undercover Online (Host control)</title>
   <script src="https://cdn.tailwindcss.com"></script>
 
   <script type="module">
@@ -19,7 +19,7 @@
       remove
     } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
 
-    // ---------- CONFIG FIREBASE (usa tu propia config si hace falta) ----------
+    // --------- CONFIG FIREBASE ----------
     const firebaseConfig = {
       apiKey: "AIzaSyCob3LEUMLwlCXAiGzheIuGmYQhArpHQ_k",
       authDomain: "undercover-37256.firebaseapp.com",
@@ -33,473 +33,461 @@
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    // ---------- Estado local ----------
+    // --------- Estado local ----------
     let gameId = localStorage.getItem("gameId") || null;
     let playerName = localStorage.getItem("playerName") || "";
     let isHost = false;
 
-    // ---------- Referencias DOM ----------
-    const inputName = () => document.getElementById("playerName");
-    const listPlayersEl = () => document.getElementById("playerList");
-    const createBtn = () => document.getElementById("btnCreate");
-    const joinBtn = () => document.getElementById("btnJoin");
-    const addBtn = () => document.getElementById("btnAdd");
-    const startBtn = () => document.getElementById("btnStart");
-    const phaseTitle = () => document.getElementById("phaseTitle");
-    const wordRevealEl = () => document.getElementById("wordReveal");
-    const wordTextEl = () => document.getElementById("wordText");
-    const hostNextSpeakerBtn = () => document.getElementById("hostNextSpeaker");
-    const speakerInfoEl = () => document.getElementById("speakerInfo");
-    const votingAreaEl = () => document.getElementById("votingArea");
-    const hostStartVotingBtn = () => document.getElementById("hostStartVoting");
-    const hostConfirmVotesBtn = () => document.getElementById("hostConfirmVotes");
-    const eliminatedInfoEl = () => document.getElementById("eliminatedInfo");
-    const newRoundBtn = () => document.getElementById("hostNewRound");
+    // ---------- DOM helpers ----------
+    const $ = id => document.getElementById(id);
 
-    // ---------- Pares de palabras (base / parecido) ----------
+    // ---------- Palabras (base, parecido) ----------
     const wordPairs = [
-      ["Perro", "Lobo"],
-      ["Gato", "Conejo"],
-      ["Playa", "Piscina"],
-      ["Sol", "Luna"],
-      ["Café", "Té"],
-      ["Avión", "Helicóptero"],
-      ["Montaña", "Colina"],
-      ["Libro", "Revista"]
+      ["Perro","Lobo"],["Gato","Conejo"],["Playa","Piscina"],
+      ["Sol","Luna"],["Café","Té"],["Avión","Helicóptero"],
+      ["Montaña","Colina"],["Libro","Revista"]
     ];
 
-    // ---------- Ayudas ----------
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-    // ---------- Crear sala ----------
-    async function createGame() {
-      const newGameRef = push(ref(db, "games"));
-      gameId = newGameRef.key;
+    // ---------- Funciones de sala ----------
+    async function createGame(){
+      const newRef = push(ref(db,"games"));
+      gameId = newRef.key;
       isHost = true;
       localStorage.setItem("gameId", gameId);
-
-      await set(newGameRef, {
+      await set(newRef, {
         players: {},
         state: "waiting",
-        turn: 0,
-        order: [],
+        revealOrder: [],
+        revealIndex: 0,
+        speakOrder: [],
         spoken: {},
         votes: {},
-        lastEliminated: null
+        lastEliminated: null,
+        round: 0
       });
-
-      alert(`Sala creada: ${gameId}\nComparte este ID con tus amigos`);
-      listenGame();
-      renderLocalUI();
+      listenGame(); renderLocalUI();
+      alert("Sala creada: " + gameId + " — compártela con tus amigos");
     }
 
-    // ---------- Unirse a sala ----------
-    async function joinGame() {
-      const id = prompt("🔑 ID de la sala:");
-      if (!id) return;
-      const snap = await get(ref(db, `games/${id}`));
-      if (!snap.exists()) return alert("❌ Sala no encontrada");
+    async function joinGame(){
+      const id = prompt("🔑 ID sala:");
+      if(!id) return;
+      const snap = await get(ref(db,`games/${id}`));
+      if(!snap.exists()) return alert("Sala no encontrada");
       gameId = id;
       isHost = false;
       localStorage.setItem("gameId", gameId);
-      listenGame();
-      renderLocalUI();
+      listenGame(); renderLocalUI();
+      alert("Te uniste a la sala: " + gameId);
     }
 
-    // ---------- Añadir jugador a sala ----------
-    async function addPlayer() {
-      const name = inputName().value.trim();
-      if (!name) return alert("Escribe tu nombre");
-      if (!gameId) return alert("Crea o únete a una sala primero");
+    async function addPlayer(){
+      const name = $('playerName').value.trim();
+      if(!name) return alert("Escribe tu nombre");
+      if(!gameId) return alert("Crea o únete a una sala");
       playerName = name;
       localStorage.setItem("playerName", playerName);
-
-      await set(ref(db, `games/${gameId}/players/${name}`), {
-        name,
-        alive: true,
-        role: "unknown",
-        word: ""
+      await set(ref(db,`games/${gameId}/players/${name}`), {
+        name, alive: true, role: "unknown", word: ""
       });
-
-      inputName().value = "";
+      $('playerName').value = "";
     }
 
-    // ---------- Escucha en tiempo real ----------
-    function listenGame() {
-      const r = ref(db, `games/${gameId}`);
-      onValue(r, (snap) => {
+    // ---------- Escuchar sala ----------
+    function listenGame(){
+      if(!gameId) return;
+      const r = ref(db,`games/${gameId}`);
+      onValue(r, snap => {
         const game = snap.val();
-        if (!game) return;
+        if(!game) return;
         renderPlayers(game.players || {});
         handleState(game);
       });
     }
 
-    // ---------- Render lista de jugadores ----------
-    function renderPlayers(players) {
+    function renderPlayers(players){
       const arr = Object.values(players || {});
-      listPlayersEl().innerHTML = arr.length
-        ? arr.map(p => `<li class="p-1">${p.name} ${!p.alive ? "💀" : ""}</li>`).join("")
+      $('playerList').innerHTML = arr.length
+        ? arr.map(p => `<li class="p-1">${p.name} ${!p.alive?"💀":""}</li>`).join("")
         : `<li class="text-gray-400 italic">Sin jugadores</li>`;
     }
 
     // ---------- Manejo de fases ----------
-    function handleState(game) {
+    function handleState(game){
       const state = game.state || "waiting";
-      // elementos host control
-      startBtn().classList.add("hidden");
-      hostNextSpeakerBtn().classList.add("hidden");
-      hostStartVotingBtn().classList.add("hidden");
-      hostConfirmVotesBtn().classList.add("hidden");
-      hostNextSpeakerBtn().disabled = true;
-      hostConfirmVotesBtn().disabled = true;
-      votingAreaEl().innerHTML = "";
-      eliminatedInfoEl().innerHTML = "";
+      // reset UI
+      $('gameArea').classList.add('hidden');
+      $('hostControls').classList.add('hidden');
+      $('wordReveal').classList.add('hidden');
+      $('speakerBox').classList.add('hidden');
+      $('votingArea').innerHTML = "";
+      $('eliminationBox').innerHTML = "";
 
-      // show UI common
-      document.getElementById("gameArea").classList.remove("hidden");
-
-      phaseTitle().textContent = {
+      // show main area
+      $('gameArea').classList.remove('hidden');
+      $('phaseTitle').textContent = {
         waiting: "Esperando jugadores...",
-        show_word: "🔒 Revelando palabras (turno por turno)",
-        speaking: "🗣️ Ronda hablada — Sigan el orden",
-        voting: "🗳️ Votación"
+        reveal: "🔒 Revelado: pasa el teléfono",
+        speaking: "🗣️ Ronda hablada",
+        voting: "🗳️ Votación",
+        ended: "🏁 Juego terminado"
       }[state] || state;
 
-      if (state === "waiting") {
-        if (isHost) startBtn().classList.remove("hidden");
+      if(state === 'waiting'){
+        if(isHost) $('hostControls').classList.remove('hidden');
+        $('wordReveal').classList.add('hidden');
       }
 
-      if (state === "show_word") {
-        // Si estás en show_word, cada jugador puede ver su palabra;
-        // además el host controla avanzar por turnos si desea la versión por-turno.
-        const players = game.players || {};
-        const turn = game.turn || 0;
-        const playerNames = Object.keys(players);
-        // si host quiere el modo "pasar turno" mantén botón "Siguiente hablante" visible para host:
-        if (isHost) {
-          hostNextSpeakerBtn().classList.remove("hidden");
-          hostNextSpeakerBtn().disabled = false;
+      if(state === 'reveal'){
+        // revealOrder and revealIndex control who may see word
+        const order = game.revealOrder || [];
+        const idx = game.revealIndex || 0;
+        const current = order[idx];
+        // If you're the current player, show your word button; else hide
+        const myWord = (game.players && game.players[playerName] && game.players[playerName].word) || "";
+        if(playerName === current){
+          $('wordReveal').classList.remove('hidden');
+          $('wordText').textContent = myWord ? `Tu palabra: ${myWord}` : "No tienes palabra asignada";
+        } else {
+          $('wordReveal').classList.add('hidden');
         }
-        // cada jugador debe ver su palabra (si fue asignada)
-        const myWord = players[playerName]?.word || "";
-        wordRevealEl().classList.remove("hidden");
-        wordTextEl().textContent = myWord ? `Tu palabra: ${myWord}` : "Aún no tienes palabra asignada";
+        // host controls
+        if(isHost){
+          $('hostControls').classList.remove('hidden');
+          $('hostNextReveal').classList.remove('hidden');
+          $('hostNextReveal').disabled = false;
+          $('hostStartSpeaking').classList.remove('hidden');
+          $('hostStartSpeaking').disabled = idx < order.length ? true : false; // only enable start speaking when index >= length
+        }
       }
 
-      if (state === "speaking") {
-        // show who must speak now based on 'order' and 'spoken'
-        const players = game.players || {};
-        const order = game.order || [];
+      if(state === 'speaking'){
+        $('speakerBox').classList.remove('hidden');
+        const order = game.speakOrder || [];
         const spoken = game.spoken || {};
-        // first not-spoken in order:
-        const nextSpeaker = order.find(p => !spoken?.[p]);
-        speakerInfoEl().textContent = nextSpeaker ? `Turno: ${nextSpeaker}` : "Todos hablaron";
-        // host controls:
-        if (isHost) {
-          hostNextSpeakerBtn().classList.remove("hidden");
-          hostNextSpeakerBtn().disabled = false;
-          hostStartVotingBtn().classList.remove("hidden");
-          hostStartVotingBtn().disabled = !!nextSpeaker; // only enable start voting when none left
+        const next = order.find(p => !spoken?.[p]);
+        $('speakerText').textContent = next ? `Ahora: ${next}` : 'Todos hablaron';
+        if(isHost){
+          $('hostControls').classList.remove('hidden');
+          $('hostNextSpeakerBtn').classList.remove('hidden');
+          $('hostStartVoting').classList.remove('hidden');
+          $('hostStartVoting').disabled = !!next; // only enable if no next (i.e., all spoken)
         }
       }
 
-      if (state === "voting") {
-        // render voting buttons for alive players
+      if(state === 'voting'){
+        // render vote buttons for all alive players
         const players = game.players || {};
-        const aliveList = Object.keys(players).filter(p => players[p].alive);
-        votingAreaEl().innerHTML = aliveList.map(p => 
-          `<button class="voteBtn bg-red-600 p-2 m-1 rounded" onclick="castVote('${p}')">${p}</button>`
-        ).join("");
-        // host confirm visible:
-        if (isHost) {
-          hostConfirmVotesBtn().classList.remove("hidden");
-          hostConfirmVotesBtn().disabled = false;
+        const alive = Object.keys(players).filter(p => players[p].alive);
+        $('votingArea').innerHTML = alive.map(p => `<button class="voteBtn bg-red-600 px-3 py-2 m-1 rounded" onclick="castVote('${p}')">${p}</button>`).join('');
+        if(isHost){
+          $('hostControls').classList.remove('hidden');
+          $('hostConfirmVotes').classList.remove('hidden');
+          $('hostConfirmVotes').disabled = false;
         }
       }
 
-      // show last eliminated
-      if (game.lastEliminated) {
-        eliminatedInfoEl().innerHTML = `<div class="p-3 rounded bg-gray-800">Último eliminado: <b>${game.lastEliminated.name}</b> — rol: <b>${game.lastEliminated.role}</b></div>`;
+      if(state === 'ended'){
+        $('eliminationBox').innerHTML = `<div class="p-3 bg-gray-800 rounded">${game.result || 'Partida finalizada'}</div>`;
+      }
+
+      // last eliminated show
+      if(game.lastEliminated){
+        $('eliminationBox').innerHTML = `<div class="p-3 bg-gray-800 rounded">Último eliminado: <b>${game.lastEliminated.name}</b> — rol: <b>${game.lastEliminated.role}</b></div>`;
       }
     }
 
-    // ---------- Start game (host) ----------
-    async function startGame() {
-      if (!isHost) return alert("Solo el host puede iniciar la partida");
-      const snap = await get(ref(db, `games/${gameId}/players`));
+    // ---------- Iniciar partida (host) ----------
+    async function startGame(){
+      if(!isHost) return alert("Solo el host puede iniciar");
+      const snap = await get(ref(db,`games/${gameId}/players`));
       const players = Object.keys(snap.val() || {});
-      if (players.length < 3) return alert("Se necesitan al menos 3 jugadores");
+      if(players.length < 3) return alert("Mínimo 3 jugadores");
 
-      // assign roles & words
+      // pick word pair and two special roles (undercover + mrwhite)
       const pair = wordPairs[Math.floor(Math.random() * wordPairs.length)];
-      // choose undercover and mrwhite distinct
-      const shuffled = [...players].sort(() => Math.random() - 0.5);
+      // shuffle players
+      const shuffled = [...players].sort(()=>Math.random()-0.5);
       const undercover = shuffled[0];
       const mrwhite = shuffled[1];
 
-      // update each player
-      for (const p of players) {
-        let role = "civil";
-        let word = pair[0];
-        if (p === undercover) { role = "undercover"; word = pair[1]; }
-        if (p === mrwhite) { role = "mrwhite"; word = "???"; }
-        await update(ref(db, `games/${gameId}/players/${p}`), { role, word });
+      // assign roles & words
+      for(const p of players){
+        let role = 'civil', word = pair[0];
+        if(p === undercover){ role='undercover'; word = pair[1]; }
+        if(p === mrwhite){ role='mrwhite'; word = '???'; }
+        await update(ref(db,`games/${gameId}/players/${p}`), { role, word });
       }
 
-      // prepare speaking order (random)
-      const order = players.sort(() => Math.random() - 0.5);
-      await update(ref(db, `games/${gameId}`), {
-        state: "show_word",
-        turn: 0,
-        order,
+      // create reveal order (random)
+      const revealOrder = [...players].sort(()=>Math.random()-0.5);
+      // speaking order will be separate (random)
+      const speakOrder = [...players].sort(()=>Math.random()-0.5);
+
+      await update(ref(db,`games/${gameId}`), {
+        state: 'reveal',
+        revealOrder,
+        revealIndex: 0,
+        speakOrder,
         spoken: {},
         votes: {},
-        lastEliminated: null
+        lastEliminated: null,
+        round: (await get(ref(db,`games/${gameId}/round`))).val() ? (await get(ref(db,`games/${gameId}/round`))).val()+1 : 1
       });
     }
 
-    // ---------- Host: advance show_word by "next" (host presses after the current player viewed) ----------
-    // We implement that the host clicking next increases turn; when turn >= players.length -> set state to 'speaking'
-    async function hostNextSpeaker() {
-      if (!isHost) return;
-      const snap = await get(ref(db, `games/${gameId}`));
+    // ---------- Host: advance reveal (host clicks when they want next player to view) ----------
+    async function hostNextReveal(){
+      if(!isHost) return;
+      const snap = await get(ref(db,`games/${gameId}`));
       const game = snap.val();
-      const players = Object.keys(game.players || {});
-      let turn = game.turn || 0;
-      // advance turn
-      turn++;
-      if (turn >= players.length) {
-        // all had chance -> go to speaking
-        await update(ref(db, `games/${gameId}`), { state: "speaking", turn, });
+      const order = game.revealOrder || [];
+      let idx = game.revealIndex || 0;
+      idx++;
+      // if idx >= length -> move to speaking
+      if(idx >= order.length){
+        await update(ref(db,`games/${gameId}`), { revealIndex: idx, state: 'speaking' });
       } else {
-        await update(ref(db, `games/${gameId}`), { turn, });
+        await update(ref(db,`games/${gameId}`), { revealIndex: idx });
       }
     }
 
-    // ---------- Host: mark current speaker as "spoken" and pick next automatically (host presses when someone finished speaking) ----------
-    async function hostMarkSpokenAndNext() {
-      if (!isHost) return;
-      const snap = await get(ref(db, `games/${gameId}`));
+    // ---------- Host: start speaking early (if desired) ----------
+    async function hostStartSpeaking(){
+      if(!isHost) return;
+      await update(ref(db,`games/${gameId}`), { state: 'speaking' });
+    }
+
+    // ---------- Host: mark current speaker as 'spoken' and advance ----------
+    async function hostNextSpeaker(){
+      if(!isHost) return;
+      const snap = await get(ref(db,`games/${gameId}`));
       const game = snap.val();
-      const order = game.order || [];
+      const order = game.speakOrder || [];
       const spoken = game.spoken || {};
-      // find next not spoken
+      // find next who hasn't spoken
       const next = order.find(p => !spoken[p]);
-      if (!next) {
-        // nobody? set to voting
-        await update(ref(db, `games/${gameId}`), { state: "voting" });
+      if(!next){
+        // nobody left -> go to voting
+        await update(ref(db,`games/${gameId}`), { state: 'voting' });
         return;
       }
       // mark them spoken
       spoken[next] = true;
-      await update(ref(db, `games/${gameId}/spoken`), spoken);
-
-      // check if still someone left
+      await update(ref(db,`games/${gameId}/spoken`), spoken);
+      // check if any left
       const still = order.find(p => !spoken[p]);
-      if (!still) {
-        // ready to vote
-        await update(ref(db, `games/${gameId}`), { state: "voting" });
+      if(!still){
+        await update(ref(db,`games/${gameId}`), { state: 'voting' });
       } else {
-        // stay in speaking, host will press again for next person when ready
-        await update(ref(db, `games/${gameId}`), { spoken });
+        // stay in speaking until host advances again
+        await update(ref(db,`games/${gameId}`), { spoken });
       }
     }
 
-    // ---------- Player: cast vote (writes votes/{playerName} = target) ----------
-    async function castVote(target) {
-      if (!playerName) return alert("Regístrate con tu nombre antes de votar");
-      await update(ref(db, `games/${gameId}/votes/${playerName}`), target);
-      // give visual feedback
-      const buttons = document.querySelectorAll(".voteBtn");
-      buttons.forEach(b => b.disabled = true);
-      alert(`Has votado por ${target}`);
+    // ---------- Casting vote (player) ----------
+    async function castVote(target){
+      if(!playerName) return alert("Regístrate antes de votar");
+      await update(ref(db,`games/${gameId}/votes/${playerName}`), target);
+      // disable vote buttons visually
+      document.querySelectorAll('.voteBtn').forEach(b => b.disabled = true);
+      // small feedback
+      alert("Votaste por: " + target);
     }
 
-    // ---------- Host: tally votes, eliminate player with most votes ----------
-    async function hostConfirmVotes() {
-      if (!isHost) return;
-      const snap = await get(ref(db, `games/${gameId}`));
+    // ---------- Host: confirm votes, eliminate & reveal ----------
+    async function hostConfirmVotes(){
+      if(!isHost) return;
+      const snap = await get(ref(db,`games/${gameId}`));
       const game = snap.val();
       const votes = game.votes || {};
-      if (!votes || Object.keys(votes).length === 0) return alert("No hay votos aún");
+      if(Object.keys(votes).length < 1) return alert("Aún no hay votos");
 
       // tally
       const tally = {};
-      Object.values(votes).forEach(v => {
-        tally[v] = (tally[v] || 0) + 1;
-      });
-
+      Object.values(votes).forEach(v => tally[v] = (tally[v]||0)+1 );
       // find max
-      let max = -1;
-      let selected = null;
-      for (const [name, count] of Object.entries(tally)) {
-        if (count > max) { max = count; selected = name; }
+      let max = -1, chosen = null;
+      for(const [name,count] of Object.entries(tally)){
+        if(count > max){ max = count; chosen = name; }
       }
+      if(!chosen) return alert("No se pudo determinar");
 
-      if (!selected) return alert("No se pudo determinar eliminado");
+      // eliminate chosen
+      const pSnap = await get(ref(db,`games/${gameId}/players/${chosen}`));
+      const pObj = pSnap.val();
+      if(!pObj) return alert("Jugador no encontrado");
 
-      // eliminate selected
-      const playerSnap = await get(ref(db, `games/${gameId}/players/${selected}`));
-      const playerObj = playerSnap.val();
-      if (!playerObj) return alert("Jugador no encontrado");
+      await update(ref(db,`games/${gameId}/players/${chosen}`), { alive: false });
+      // store last eliminated with role
+      await update(ref(db,`games/${gameId}`), { lastEliminated: { name: chosen, role: pObj.role || 'unknown' } });
 
-      // set alive false
-      await update(ref(db, `games/${gameId}/players/${selected}`), { alive: false });
+      // clear votes
+      await set(ref(db,`games/${gameId}/votes`), {});
 
-      // store lastEliminated
-      await update(ref(db, `games/${gameId}`), {
-        lastEliminated: { name: selected, role: playerObj.role || "unknown" }
-      });
-
-      // clear votes and prepare next round or end game
-      await update(ref(db, `games/${gameId}/votes`), {}); // clear votes
-      // check winners
-      await sleep(300); // small delay so clients update
-      await checkWinnerAndProceed();
+      // if eliminated is mrwhite -> allow guess (we'll implement simple flow: host triggers check after guess)
+      if(pObj.role === 'mrwhite'){
+        // set a field that mrwhite needs to guess
+        await update(ref(db,`games/${gameId}`), { mrwhiteGuessFor: chosen, state: 'mrwhite_guess' });
+      } else {
+        // continue normally
+        await sleep(400);
+        await checkWinnerAndNext();
+      }
     }
 
-    // ---------- Check winners and continue or end ----------
-    async function checkWinnerAndProceed() {
-      const snap = await get(ref(db, `games/${gameId}`));
+    // ---------- MR WHITE attempt guess (only available if this client is the eliminated mrwhite) ----------
+    async function mrWhiteGuess(){
+      const guess = prompt("Intento final: adivina la palabra secreta de los civiles:");
+      if(guess === null) return;
+      // fetch current game's base word: we can retrieve remaining alive civil/undercover words and infer base
+      const snap = await get(ref(db,`games/${gameId}`));
+      const game = snap.val();
+      // find a civil who is alive or even dead who has word != '???'
+      const players = game.players || {};
+      let sampleWord = null;
+      for(const [k,v] of Object.entries(players)){
+        if(v.word && v.word !== '???'){ sampleWord = v.word; break; }
+      }
+      // compare case-insensitive
+      if(sampleWord && guess.trim().toLowerCase() === sampleWord.trim().toLowerCase()){
+        // mrwhite wins
+        await update(ref(db,`games/${gameId}`), { state: 'ended', result: `Mr White adivinó y gana con "${guess}"` });
+        alert("Mr White adivinó correctamente. Fin del juego.");
+      } else {
+        // mrwhite failed -> continue game
+        await update(ref(db,`games/${gameId}`), { mrwhiteGuessFor: null, state: 'continue_after_mrwhite_guess' });
+        await sleep(400);
+        await checkWinnerAndNext();
+      }
+    }
+
+    // ---------- Check winners and proceed ----------
+    async function checkWinnerAndNext(){
+      const snap = await get(ref(db,`games/${gameId}`));
       const game = snap.val();
       const players = game.players || {};
       const alive = Object.keys(players).filter(p => players[p].alive);
-      const underAlive = alive.find(p => players[p].role === "undercover");
-      const whiteAlive = alive.find(p => players[p].role === "mrwhite");
+      const underAlive = alive.find(p => players[p].role === 'undercover');
+      const whiteAlive = alive.find(p => players[p].role === 'mrwhite');
 
-      if (!underAlive && !whiteAlive) {
-        // citizens win
-        await update(ref(db, `games/${gameId}`), { state: "ended", result: "Civiles ganaron" });
-        alert("Civiles ganaron 🎉");
+      if(!underAlive && !whiteAlive){
+        await update(ref(db,`games/${gameId}`), { state: 'ended', result: 'Civiles ganaron' });
         return;
       }
-      if (alive.length <= 2 && (underAlive || whiteAlive)) {
-        // impostor(s) win
-        await update(ref(db, `games/${gameId}`), { state: "ended", result: "Impostores ganaron" });
-        alert("Impostores ganaron 😈");
+      if(alive.length <= 2 && (underAlive || whiteAlive)){
+        await update(ref(db,`games/${gameId}`), { state: 'ended', result: 'Impostores (Undercover/MrWhite) ganaron' });
         return;
       }
 
-      // otherwise start new speaking round with alive players
-      const aliveOrder = alive.sort(() => Math.random() - 0.5);
-      // reset spoken map
-      const newSpoken = {};
-      await update(ref(db, `games/${gameId}`), {
-        state: "show_word", // show_word so each can re-check their word or just skip to speaking; we use show_word -> host will advance
-        order: aliveOrder,
-        spoken: newSpoken,
-        turn: 0,
+      // prepare next round: keep roles/words for survivors, prepare new reveal/speak order
+      const newOrder = alive.sort(()=>Math.random()-0.5);
+      await update(ref(db,`games/${gameId}`), {
+        state: 'reveal',
+        revealOrder: newOrder,
+        revealIndex: 0,
+        speakOrder: newOrder.map(x=>x).sort(()=>Math.random()-0.5),
+        spoken: {},
         votes: {},
-        lastEliminated: null
+        lastEliminated: null,
+        round: (game.round || 0) + 1
       });
     }
 
-    // ---------- Host: start voting manually (if host decides before all spoken) ----------
-    async function hostStartVoting() {
-      if (!isHost) return;
-      await update(ref(db, `games/${gameId}`), { state: "voting" });
-    }
+    // ---------- Small util ----------
+    const sleep = ms => new Promise(r=>setTimeout(r,ms));
 
-    // ---------- Host: start new round after elimination reveal ----------
-    async function hostStartNewRound() {
-      // just call checkWinnerAndProceed to continue flow
-      await checkWinnerAndProceed();
-    }
-
-    // ---------- Utility: render local UI bits ----------
-    function renderLocalUI() {
-      // show/hide host controls in DOM
-      if (isHost) {
-        document.getElementById("hostControls").classList.remove("hidden");
-      } else {
-        document.getElementById("hostControls").classList.add("hidden");
-      }
-    }
-
-    // ---------- Wire functions to window (for inline onclicks) ----------
+    // ---------- UI wiring ----------
     window.createGame = createGame;
     window.joinGame = joinGame;
     window.addPlayer = addPlayer;
     window.startGame = startGame;
+    window.hostNextReveal = hostNextReveal;
+    window.hostStartSpeaking = hostStartSpeaking;
     window.hostNextSpeaker = hostNextSpeaker;
-    window.hostMarkSpokenAndNext = hostMarkSpokenAndNext;
-    window.castVote = castVote;
+    window.hostStartVoting = async ()=> { if(isHost) await update(ref(db,`games/${gameId}`),{ state: 'voting' }); };
+    window.castVote = castVote; // alias for inline
     window.hostConfirmVotes = hostConfirmVotes;
-    window.hostStartVoting = hostStartVoting;
-    window.hostStartNewRound = hostStartNewRound;
+    window.mrWhiteGuess = mrWhiteGuess;
+    window.hostStartNewRound = async ()=> { await checkWinnerAndNext(); };
 
-    // Auto-listen if gameId present
-    if (gameId) {
-      // if the user loaded page and had local game id, attempt to listen
-      listenGame();
-      renderLocalUI();
+    function castVote(target){ return window.castVote = async (t)=>{ await update(ref(db,`games/${gameId}/votes/${playerName}`), t); alert('Votado: '+t); } , window.castVote(target); }
+
+    // ---------- render local host controls visibility ----------
+    function renderLocalUI(){
+      if(isHost) $('hostControls').classList.remove('hidden'); else $('hostControls').classList.add('hidden');
+      // if playerName set, show some UI hints
+      if(playerName) $('youName').textContent = `Tú: ${playerName}`;
     }
+
+    // auto-listen if there's a saved game id
+    if(gameId) { listenGame(); renderLocalUI(); }
   </script>
 
   <style>
     @keyframes glow { 0%,100%{ text-shadow:0 0 20px #9333ea,0 0 40px #a855f7 } 50%{ text-shadow:0 0 40px #c084fc } }
-    .glow { animation: glow 2s infinite alternate; }
-    .neon-border { border:2px solid rgba(147,51,234,0.5); box-shadow:0 0 20px rgba(147,51,234,0.5),0 0 40px rgba(126,34,206,0.4); }
+    .glow{animation:glow 2s infinite alternate}
+    .neon-border{border:2px solid rgba(147,51,234,0.5);box-shadow:0 0 20px rgba(147,51,234,0.5),0 0 40px rgba(126,34,206,0.4)}
   </style>
 </head>
 <body class="bg-gradient-to-br from-black via-purple-950 to-gray-900 text-white min-h-screen flex items-center justify-center p-6">
-  <div class="w-full max-w-lg neon-border rounded-2xl p-8 bg-gray-900/90 shadow-2xl">
-    <h1 class="text-4xl font-extrabold glow text-center mb-6">🎭 UNDERCOVER</h1>
+  <div class="w-full max-w-lg neon-border rounded-2xl p-6 bg-gray-900/90 shadow-2xl">
+    <h1 class="text-3xl font-extrabold glow text-center mb-4">🎭 UNDERCOVER</h1>
 
-    <div class="space-y-4">
+    <div class="space-y-3">
       <div class="flex gap-2">
-        <button id="btnCreate" onclick="createGame()" class="flex-1 bg-green-600 p-3 rounded-lg">🟢 Crear</button>
-        <button id="btnJoin" onclick="joinGame()" class="flex-1 bg-indigo-600 p-3 rounded-lg">🔵 Unirse</button>
+        <button id="btnCreate" onclick="createGame()" class="flex-1 bg-green-600 p-2 rounded">🟢 Crear sala</button>
+        <button id="btnJoin" onclick="joinGame()" class="flex-1 bg-indigo-600 p-2 rounded">🔵 Unirse</button>
       </div>
 
       <div class="flex gap-2">
-        <input id="playerName" class="flex-1 p-3 rounded bg-gray-800" placeholder="Tu nombre" />
-        <button id="btnAdd" onclick="addPlayer()" class="bg-purple-600 px-4 rounded">➕</button>
+        <input id="playerName" class="flex-1 p-2 rounded bg-gray-800" placeholder="Tu nombre" />
+        <button id="btnAdd" onclick="addPlayer()" class="bg-purple-600 px-3 rounded">➕</button>
       </div>
 
       <div>
-        <h3 class="text-sm text-purple-300 mb-1">Jugadores:</h3>
-        <ul id="playerList" class="list-disc pl-5 text-left text-purple-200"></ul>
+        <h3 class="text-sm text-purple-300">Jugadores</h3>
+        <ul id="playerList" class="list-disc pl-6 text-left text-purple-200"></ul>
       </div>
 
+      <!-- Host controls -->
       <div id="hostControls" class="hidden space-y-2">
-        <button id="btnStart" onclick="startGame()" class="w-full bg-yellow-500 p-3 rounded">🚀 Iniciar partida (Host)</button>
+        <button id="btnStart" onclick="startGame()" class="w-full bg-yellow-500 p-2 rounded">🚀 Iniciar partida</button>
         <div class="flex gap-2">
-          <button id="hostNextSpeaker" onclick="hostNextSpeaker()" class="flex-1 bg-blue-600 p-2 rounded hidden">⏭️ Siguiente turno (host)</button>
-          <button id="hostMark" onclick="hostMarkSpokenAndNext()" class="flex-1 bg-blue-500 p-2 rounded">✅ Marcar hablado (host)</button>
+          <button id="hostNextReveal" onclick="hostNextReveal()" class="flex-1 bg-blue-600 p-2 rounded hidden">⏭️ Siguiente revelación (host)</button>
+          <button id="hostMarkDone" onclick="hostNextSpeaker()" class="flex-1 bg-blue-500 p-2 rounded hidden">✅ Marcar hablado (host)</button>
         </div>
-      </div>
-
-      <div id="gameArea" class="hidden">
-        <h2 id="phaseTitle" class="text-xl font-bold text-purple-300 mb-2"></h2>
-
-        <!-- Word reveal area -->
-        <div id="wordReveal" class="hidden p-4 bg-gray-800 rounded mb-3">
-          <p id="wordText" class="text-2xl text-yellow-300 font-semibold"></p>
-          <p class="text-sm text-gray-400 mt-2">Véala en secreto y pásale el teléfono al siguiente.</p>
-        </div>
-
-        <!-- Speaking info -->
-        <div class="p-3 bg-gray-800 rounded mb-3">
-          <p id="speakerInfo" class="text-lg text-purple-200 font-medium">—</p>
-          <p class="text-sm text-gray-400">El host marcará cuando el hablante haya terminado.</p>
-        </div>
-
-        <!-- Voting area -->
-        <div id="votingArea" class="mb-3"></div>
-
         <div class="flex gap-2">
+          <button id="hostStartSpeaking" onclick="hostStartSpeaking()" class="flex-1 bg-pink-500 p-2 rounded hidden">▶ Iniciar speaking (host)</button>
           <button id="hostStartVoting" onclick="hostStartVoting()" class="flex-1 bg-pink-600 p-2 rounded hidden">🗳️ Iniciar votación (host)</button>
-          <button id="hostConfirmVotes" onclick="hostConfirmVotes()" class="flex-1 bg-red-600 p-2 rounded hidden">🔴 Confirmar votos (host)</button>
+        </div>
+        <div class="flex gap-2">
+          <button id="hostConfirmVotes" onclick="hostConfirmVotes()" class="flex-1 bg-red-600 p-2 rounded hidden">🔴 Confirmar votos / Eliminar</button>
           <button id="hostNewRound" onclick="hostStartNewRound()" class="flex-1 bg-emerald-600 p-2 rounded">🔁 Nueva ronda</button>
         </div>
-
-        <div id="eliminatedInfo" class="mt-4"></div>
       </div>
-    </div>
 
-    <p class="mt-6 text-xs text-gray-400">Nota: las pistas se dicen en voz alta (por ejemplo en Discord). Este panel sincroniza turnos y votaciones.</p>
+      <!-- Game area -->
+      <div id="gameArea" class="hidden mt-4">
+        <h2 id="phaseTitle" class="text-lg font-bold text-purple-300 mb-2"></h2>
+
+        <div id="wordReveal" class="p-3 bg-gray-800 rounded mb-3 hidden">
+          <p id="wordText" class="text-2xl text-yellow-300 font-semibold"></p>
+          <p class="text-sm text-gray-400 mt-2">Mira la palabra en privado y pasa el teléfono.</p>
+        </div>
+
+        <div id="speakerBox" class="p-3 bg-gray-800 rounded mb-3 hidden">
+          <p id="speakerText" class="text-lg text-purple-200"></p>
+          <p class="text-sm text-gray-400 mt-1">El host marcará cuando termine cada hablante.</p>
+        </div>
+
+        <div id="votingArea" class="mb-3"></div>
+
+        <div id="eliminationBox" class="mb-3"></div>
+      </div>
+
+      <div class="text-xs text-gray-400">Nota: las pistas se dicen en voz (por ejemplo en Discord). Aquí solo sincronizamos turnos, revelados y votaciones.</div>
+    </div>
   </div>
 </body>
 </html>
