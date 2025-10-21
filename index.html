@@ -13,10 +13,6 @@
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        .blur-word {
-            filter: blur(8px);
-            user-select: none;
-        }
         .pulse-animation {
             animation: pulse 2s infinite;
         }
@@ -294,7 +290,7 @@
                 </div>
 
                 <button onclick="acknowledgeRole()" class="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-bold text-xl py-5 rounded-2xl transition-all shadow-lg">
-                    ✓ Entendido
+                    ✓ Listo, continuar
                 </button>
             </div>
         </div>
@@ -305,20 +301,30 @@
         <div class="max-w-4xl mx-auto">
             <div class="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl">
                 <div class="text-center mb-8">
-                    <h2 class="text-4xl font-bold mb-4">Ronda de Pistas</h2>
-                    <p class="text-xl text-gray-300">Cada jugador da una pista de una palabra</p>
-                    <div class="mt-4">
+                    <h2 class="text-4xl font-bold mb-4">🎮 Juego en Curso</h2>
+                    <p class="text-xl text-gray-300 mb-4">Cada jugador da una pista de una palabra</p>
+                    <div class="bg-purple-500/30 rounded-xl p-4 mb-4">
+                        <p class="text-lg">Tu rol: <span id="gameMyRole" class="font-bold text-yellow-400">Civil</span></p>
+                        <p id="gameMyWord" class="text-2xl font-bold mt-2">PERRO</p>
+                    </div>
+                    <div>
                         <span class="bg-purple-500 px-4 py-2 rounded-full text-lg font-bold">
                             Ronda <span id="currentRound">1</span>
                         </span>
                     </div>
                 </div>
 
-                <div id="activePlayersList" class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8"></div>
+                <div class="mb-6">
+                    <h3 class="text-xl font-bold mb-3 text-center">Jugadores Activos</h3>
+                    <div id="activePlayersList" class="grid grid-cols-2 md:grid-cols-3 gap-4"></div>
+                </div>
 
                 <div id="gameControls" class="space-y-4">
                     <button onclick="showVoting()" class="w-full bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-600 hover:to-pink-700 text-white font-bold text-xl py-5 rounded-2xl transition-all shadow-lg">
                         🗳️ Iniciar Votación
+                    </button>
+                    <button onclick="continueGame()" class="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold text-lg py-4 rounded-xl transition-all">
+                        ➡️ Siguiente Ronda
                     </button>
                 </div>
             </div>
@@ -338,9 +344,10 @@
 
                 <div id="votingList" class="space-y-3 mb-8"></div>
 
-                <div id="votingResults" class="hidden mt-8 bg-yellow-500/20 border-2 border-yellow-500 rounded-xl p-6">
-                    <h3 class="text-2xl font-bold mb-4 text-center">Resultados</h3>
-                    <div id="votingResultsList"></div>
+                <div id="hostVotingControls" class="hidden mt-6">
+                    <button onclick="processVotes()" class="w-full bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 text-white font-bold text-xl py-5 rounded-2xl transition-all shadow-lg">
+                        📊 Ver Resultados
+                    </button>
                 </div>
             </div>
         </div>
@@ -371,7 +378,6 @@
         import { getDatabase, ref, set, get, update, onValue, push, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
         import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics.js";
 
-        // Tu configuración de Firebase
         const firebaseConfig = {
             apiKey: "AIzaSyCob3LEUMLwlCXAiGzheIuGmYQhArpHQ_k",
             authDomain: "undercover-37256.firebaseapp.com",
@@ -382,12 +388,10 @@
             measurementId: "G-EW0ZL3GNTK"
         };
 
-        // Inicializar Firebase
         const app = initializeApp(firebaseConfig);
         const database = getDatabase(app);
         const analytics = getAnalytics(app);
 
-        // Exportar para uso global
         window.firebaseDb = database;
         window.firebaseRef = ref;
         window.firebaseSet = set;
@@ -402,7 +406,6 @@
     </script>
 
     <script>
-        // Banco de palabras
         const wordPairs = [
             { civilian: "PERRO", undercover: "GATO" },
             { civilian: "CAFÉ", undercover: "TÉ" },
@@ -423,14 +426,9 @@
             { civilian: "GOOGLE", undercover: "BING" },
             { civilian: "ZAPATO", undercover: "ZAPATILLA" },
             { civilian: "HOTEL", undercover: "MOTEL" },
-            { civilian: "AGUA", undercover: "JUGO" },
-            { civilian: "PAN", undercover: "TORTILLA" },
-            { civilian: "DENTISTA", undercover: "ORTODONCISTA" },
-            { civilian: "TREN", undercover: "METRO" },
-            { civilian: "ESPEJO", undercover: "VENTANA" }
+            { civilian: "AGUA", undercover: "JUGO" }
         ];
 
-        // Estado del juego
         let gameState = {
             roomCode: null,
             playerId: null,
@@ -438,46 +436,51 @@
             isHost: false,
             myRole: null,
             myWord: null,
-            roomListener: null
+            roomListener: null,
+            hasAcknowledged: false
         };
 
-        // Generar código de sala único
         function generateRoomCode() {
             return Math.random().toString(36).substring(2, 8).toUpperCase();
         }
 
-        // Generar ID de jugador único
         function generatePlayerId() {
             return 'player_' + Math.random().toString(36).substring(2, 15);
         }
 
-        // Funciones de navegación
         function showHome() {
             hideAllScreens();
             if (gameState.roomListener) {
                 gameState.roomListener();
                 gameState.roomListener = null;
             }
+            gameState = {
+                roomCode: null,
+                playerId: null,
+                playerName: null,
+                isHost: false,
+                myRole: null,
+                myWord: null,
+                roomListener: null,
+                hasAcknowledged: false
+            };
             document.getElementById('homeScreen').classList.remove('hidden');
         }
 
         function showRules() {
             hideAllScreens();
             document.getElementById('rulesScreen').classList.remove('hidden');
-            document.getElementById('rulesScreen').classList.add('fade-in');
         }
 
         function showCreateRoom() {
             hideAllScreens();
             document.getElementById('createRoomScreen').classList.remove('hidden');
-            document.getElementById('createRoomScreen').classList.add('fade-in');
             updateCreateConfig();
         }
 
         function showJoinRoom() {
             hideAllScreens();
             document.getElementById('joinRoomScreen').classList.remove('hidden');
-            document.getElementById('joinRoomScreen').classList.add('fade-in');
         }
 
         function hideAllScreens() {
@@ -488,17 +491,14 @@
             });
         }
 
-        // Actualizar configuración de creación
         function updateCreateConfig() {
             const maxPlayers = parseInt(document.getElementById('maxPlayers').value);
             const numUndercover = parseInt(document.getElementById('createUndercover').value);
             const numMrWhite = parseInt(document.getElementById('createMrWhite').value);
-            
             const numCivilians = maxPlayers - numUndercover - numMrWhite;
             document.getElementById('createCivilians').textContent = numCivilians;
         }
 
-        // Crear sala
         async function createRoom() {
             const hostName = document.getElementById('hostName').value.trim();
             if (!hostName) {
@@ -529,6 +529,7 @@
                 status: 'lobby',
                 words: wordPair,
                 createdAt: Date.now(),
+                round: 1,
                 players: {
                     [playerId]: {
                         id: playerId,
@@ -536,7 +537,8 @@
                         isHost: true,
                         ready: false,
                         eliminated: false,
-                        role: null
+                        role: null,
+                        acknowledged: false
                     }
                 }
             };
@@ -549,7 +551,6 @@
                 gameState.playerName = hostName;
                 gameState.isHost = true;
 
-                // Configurar desconexión
                 const playerRef = window.firebaseRef(window.firebaseDb, `rooms/${roomCode}/players/${playerId}`);
                 window.firebaseOnDisconnect(playerRef).remove();
 
@@ -560,7 +561,6 @@
             }
         }
 
-        // Unirse a sala
         async function joinRoom() {
             const playerName = document.getElementById('playerName').value.trim();
             const roomCode = document.getElementById('roomCode').value.trim().toUpperCase();
@@ -604,7 +604,8 @@
                     isHost: false,
                     ready: false,
                     eliminated: false,
-                    role: null
+                    role: null,
+                    acknowledged: false
                 };
 
                 await window.firebaseUpdate(window.firebaseRef(window.firebaseDb, `rooms/${roomCode}/players/${playerId}`), playerData);
@@ -614,7 +615,6 @@
                 gameState.playerName = playerName;
                 gameState.isHost = false;
 
-                // Configurar desconexión
                 const playerRef = window.firebaseRef(window.firebaseDb, `rooms/${roomCode}/players/${playerId}`);
                 window.firebaseOnDisconnect(playerRef).remove();
 
@@ -625,7 +625,6 @@
             }
         }
 
-        // Mostrar lobby
         function showLobby() {
             hideAllScreens();
             document.getElementById('lobbyScreen').classList.remove('hidden');
@@ -637,7 +636,6 @@
                 document.getElementById('hostControls').classList.add('hidden');
             }
 
-            // Escuchar cambios en la sala
             const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
             gameState.roomListener = window.firebaseOnValue(roomRef, (snapshot) => {
                 if (!snapshot.exists()) {
@@ -649,20 +647,20 @@
                 const roomData = snapshot.val();
                 updateLobbyPlayers(roomData);
 
-                // Si el juego comenzó, ir a pantalla de roles
-                if (roomData.status === 'roles') {
-                    showRoleScreen(roomData);
+                console.log('Estado de la sala:', roomData.status);
+
+                if (roomData.status === 'roles' && !gameState.hasAcknowledged) {
+                    showRoleScreenFromUpdate(roomData);
                 } else if (roomData.status === 'playing') {
-                    showGameScreen(roomData);
+                    showGameScreenFromUpdate(roomData);
                 } else if (roomData.status === 'voting') {
-                    showVotingScreen(roomData);
+                    showVotingScreenFromUpdate(roomData);
                 } else if (roomData.status === 'finished') {
-                    showResultsScreen(roomData);
+                    showResultsScreenFromUpdate(roomData);
                 }
             });
         }
 
-        // Actualizar lista de jugadores en lobby
         function updateLobbyPlayers(roomData) {
             const playersList = document.getElementById('playersList');
             const players = Object.values(roomData.players || {});
@@ -679,29 +677,24 @@
                         <div class="text-2xl mr-3">${player.isHost ? '👑' : '👤'}</div>
                         <span class="font-semibold">${player.name}</span>
                     </div>
-                    ${player.ready ? '<span class="text-green-400">✓</span>' : ''}
                 `;
                 playersList.appendChild(playerDiv);
             });
         }
 
-        // Copiar código de sala
         function copyRoomCode() {
             navigator.clipboard.writeText(gameState.roomCode);
             alert('¡Código copiado!');
         }
 
-        // Salir del lobby
         async function leaveLobby() {
             if (confirm('¿Seguro que quieres salir?')) {
                 try {
-                    await window.firebaseRemove(window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/players/${gameState.playerId}`));
-                    
-                    // Si es el host, eliminar la sala
                     if (gameState.isHost) {
                         await window.firebaseRemove(window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`));
+                    } else {
+                        await window.firebaseRemove(window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/players/${gameState.playerId}`));
                     }
-                    
                     showHome();
                 } catch (error) {
                     console.error('Error al salir:', error);
@@ -709,7 +702,6 @@
             }
         }
 
-        // Iniciar juego desde lobby
         async function startGameFromLobby() {
             try {
                 const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
@@ -723,7 +715,6 @@
                     return;
                 }
 
-                // Asignar roles
                 const roles = [];
                 const numCivilians = players.length - roomData.numUndercover - roomData.numMrWhite;
                 
@@ -731,10 +722,8 @@
                 for (let i = 0; i < roomData.numUndercover; i++) roles.push('undercover');
                 for (let i = 0; i < roomData.numMrWhite; i++) roles.push('mrwhite');
                 
-                // Barajar roles
                 roles.sort(() => Math.random() - 0.5);
 
-                // Asignar roles a jugadores
                 const updates = {};
                 players.forEach((player, index) => {
                     updates[`players/${player.id}/role`] = roles[index];
@@ -742,18 +731,17 @@
                 });
                 
                 updates['status'] = 'roles';
-                updates['round'] = 1;
-                updates['currentPhase'] = 'reveal';
 
                 await window.firebaseUpdate(window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`), updates);
+                
+                console.log('Juego iniciado, roles asignados');
             } catch (error) {
                 console.error('Error al iniciar juego:', error);
                 alert('Error al iniciar el juego');
             }
         }
 
-        // Mostrar pantalla de roles
-        function showRoleScreen(roomData) {
+        function showRoleScreenFromUpdate(roomData) {
             hideAllScreens();
             document.getElementById('roleScreen').classList.remove('hidden');
             document.getElementById('roleHidden').classList.remove('hidden');
@@ -761,9 +749,10 @@
 
             const myPlayer = roomData.players[gameState.playerId];
             gameState.myRole = myPlayer.role;
+            
+            console.log('Mostrando rol:', gameState.myRole);
         }
 
-        // Revelar rol
         function revealRole() {
             const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
             window.firebaseGet(roomRef).then(snapshot => {
@@ -801,7 +790,7 @@
                     gameState.myWord = words.undercover;
                 } else {
                     document.getElementById('wordContainer').classList.add('hidden');
-                    gameState.myWord = null;
+                    gameState.myWord = 'Sin palabra';
                 }
 
                 document.getElementById('roleHidden').classList.add('hidden');
@@ -809,21 +798,16 @@
             });
         }
 
-        // Confirmar que vio el rol
         async function acknowledgeRole() {
             try {
+                gameState.hasAcknowledged = true;
+                
                 await window.firebaseUpdate(
                     window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/players/${gameState.playerId}`),
                     { acknowledged: true }
                 );
 
-                // Esperar a que todos confirmen
-                document.getElementById('roleRevealed').innerHTML = `
-                    <div class="text-center">
-                        <div class="text-6xl mb-4 pulse-animation">⏳</div>
-                        <p class="text-2xl font-bold">Esperando a otros jugadores...</p>
-                    </div>
-                `;
+                console.log('Rol confirmado');
 
                 // Verificar si todos están listos
                 const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
@@ -832,39 +816,67 @@
                 const players = Object.values(roomData.players || {});
                 const allAcknowledged = players.every(p => p.acknowledged);
 
+                console.log(`Jugadores listos: ${players.filter(p => p.acknowledged).length}/${players.length}`);
+
                 if (allAcknowledged && gameState.isHost) {
+                    console.log('Todos listos, iniciando juego...');
                     await window.firebaseUpdate(
                         window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
                         { status: 'playing' }
                     );
+                } else {
+                    // Mostrar pantalla de espera
+                    document.getElementById('roleRevealed').innerHTML = `
+                        <div class="text-center">
+                            <div class="text-6xl mb-4 pulse-animation">⏳</div>
+                            <p class="text-2xl font-bold mb-4">Esperando a otros jugadores...</p>
+                            <p class="text-gray-400">${players.filter(p => p.acknowledged).length}/${players.length} listos</p>
+                        </div>
+                    `;
                 }
             } catch (error) {
                 console.error('Error:', error);
+                alert('Error al confirmar. Intenta de nuevo.');
             }
         }
 
-        // Mostrar pantalla de juego
-        function showGameScreen(roomData) {
+        function showGameScreenFromUpdate(roomData) {
             hideAllScreens();
             document.getElementById('gameScreen').classList.remove('hidden');
             
+            // Mostrar mi rol y palabra
+            const roleNames = {
+                civilian: '👥 Civil',
+                undercover: '🕵️ Undercover',
+                mrwhite: '⚪ Mr. White'
+            };
+            document.getElementById('gameMyRole').textContent = roleNames[gameState.myRole];
+            
+            if (gameState.myWord && gameState.myWord !== 'Sin palabra') {
+                document.getElementById('gameMyWord').textContent = gameState.myWord;
+                document.getElementById('gameMyWord').classList.remove('hidden');
+            } else {
+                document.getElementById('gameMyWord').textContent = '(Sin palabra - debes adivinar)';
+                document.getElementById('gameMyWord').classList.remove('hidden');
+            }
+
             const players = Object.values(roomData.players || {}).filter(p => !p.eliminated);
             const activePlayersList = document.getElementById('activePlayersList');
             activePlayersList.innerHTML = '';
 
             players.forEach(player => {
                 const playerDiv = document.createElement('div');
-                playerDiv.className = 'bg-white/20 rounded-xl p-4 text-center';
+                playerDiv.className = `bg-white/20 rounded-xl p-4 text-center ${player.id === gameState.playerId ? 'ring-2 ring-yellow-400' : ''}`;
                 playerDiv.innerHTML = `
                     <div class="text-3xl mb-2">${player.isHost ? '👑' : '👤'}</div>
                     <p class="font-bold">${player.name}</p>
+                    ${player.id === gameState.playerId ? '<p class="text-xs text-yellow-400 mt-1">Tú</p>' : ''}
                 `;
                 activePlayersList.appendChild(playerDiv);
             });
 
             document.getElementById('currentRound').textContent = roomData.round || 1;
 
-            // Solo el host puede iniciar votación
             if (gameState.isHost) {
                 document.getElementById('gameControls').classList.remove('hidden');
             } else {
@@ -872,7 +884,23 @@
             }
         }
 
-        // Mostrar votación
+        async function continueGame() {
+            if (!gameState.isHost) return;
+
+            try {
+                const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
+                const snapshot = await window.firebaseGet(roomRef);
+                const roomData = snapshot.val();
+
+                await window.firebaseUpdate(
+                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                    { round: (roomData.round || 1) + 1 }
+                );
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
         async function showVoting() {
             if (!gameState.isHost) return;
 
@@ -889,8 +917,7 @@
             }
         }
 
-        // Mostrar pantalla de votación
-        function showVotingScreen(roomData) {
+        function showVotingScreenFromUpdate(roomData) {
             hideAllScreens();
             document.getElementById('votingScreen').classList.remove('hidden');
 
@@ -908,7 +935,7 @@
                 voteButton.className = `w-full bg-white/20 hover:bg-white/30 text-white font-semibold py-4 px-6 rounded-xl transition-all text-left flex items-center justify-between ${myVote === player.id ? 'ring-4 ring-yellow-400' : ''}`;
                 voteButton.innerHTML = `
                     <span class="text-xl">${player.isHost ? '👑' : '👤'} ${player.name}</span>
-                    <span class="bg-red-500 px-3 py-1 rounded-full text-sm font-bold">${voteCount} ${voteCount === 1 ? 'voto' : 'votos'}</span>
+                    <span class="bg-red-500 px-3 py-1 rounded-full text-sm font-bold">${voteCount}</span>
                 `;
                 
                 if (!hasVoted) {
@@ -921,118 +948,111 @@
                 votingList.appendChild(voteButton);
             });
 
-            // Actualizar estado de votación
             const totalPlayers = players.length;
             const totalVotes = Object.keys(roomData.votes || {}).length;
             document.getElementById('votingStatus').textContent = `Votos: ${totalVotes}/${totalPlayers}`;
 
-            // Si todos votaron y soy host, procesar resultados
-            if (totalVotes === totalPlayers && gameState.isHost) {
-                setTimeout(() => processVotingResults(roomData), 2000);
+            if (gameState.isHost && totalVotes === totalPlayers) {
+                document.getElementById('hostVotingControls').classList.remove('hidden');
+            } else {
+                document.getElementById('hostVotingControls').classList.add('hidden');
             }
         }
 
-        // Emitir voto
         async function castVote(targetPlayerId) {
             try {
+                const updates = {};
+                updates[`votes/${gameState.playerId}`] = targetPlayerId;
                 await window.firebaseUpdate(
-                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/votes/${gameState.playerId}`),
-                    targetPlayerId
+                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                    updates
                 );
             } catch (error) {
                 console.error('Error al votar:', error);
             }
         }
 
-        // Procesar resultados de votación
-        async function processVotingResults(roomData) {
-            const votes = roomData.votes || {};
-            const voteCount = {};
+        async function processVotes() {
+            if (!gameState.isHost) return;
 
-            // Contar votos
-            Object.values(votes).forEach(votedId => {
-                voteCount[votedId] = (voteCount[votedId] || 0) + 1;
-            });
+            try {
+                const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
+                const snapshot = await window.firebaseGet(roomRef);
+                const roomData = snapshot.val();
 
-            // Encontrar al más votado
-            let maxVotes = 0;
-            let eliminatedPlayerId = null;
+                const votes = roomData.votes || {};
+                const voteCount = {};
 
-            Object.entries(voteCount).forEach(([playerId, count]) => {
-                if (count > maxVotes) {
-                    maxVotes = count;
-                    eliminatedPlayerId = playerId;
-                }
-            });
+                Object.values(votes).forEach(votedId => {
+                    voteCount[votedId] = (voteCount[votedId] || 0) + 1;
+                });
 
-            if (!eliminatedPlayerId) {
-                // Nadie fue eliminado, continuar juego
-                await window.firebaseUpdate(
-                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
-                    { 
-                        status: 'playing',
-                        round: (roomData.round || 1) + 1
+                let maxVotes = 0;
+                let eliminatedPlayerId = null;
+
+                Object.entries(voteCount).forEach(([playerId, count]) => {
+                    if (count > maxVotes) {
+                        maxVotes = count;
+                        eliminatedPlayerId = playerId;
                     }
+                });
+
+                if (!eliminatedPlayerId) {
+                    await window.firebaseUpdate(
+                        window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                        { 
+                            status: 'playing',
+                            round: (roomData.round || 1) + 1
+                        }
+                    );
+                    return;
+                }
+
+                await window.firebaseUpdate(
+                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/players/${eliminatedPlayerId}`),
+                    { eliminated: true }
                 );
-                return;
-            }
 
-            // Eliminar jugador
-            await window.firebaseUpdate(
-                window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/players/${eliminatedPlayerId}`),
-                { eliminated: true }
-            );
+                const players = Object.values(roomData.players || {});
+                const activePlayers = players.filter(p => !p.eliminated && p.id !== eliminatedPlayerId);
+                const activeUndercover = activePlayers.filter(p => p.role === 'undercover').length;
+                const activeMrWhite = activePlayers.filter(p => p.role === 'mrwhite').length;
+                const activeCivilian = activePlayers.filter(p => p.role === 'civilian').length;
 
-            // Verificar condiciones de victoria
-            const players = Object.values(roomData.players || {});
-            const activePlayers = players.filter(p => !p.eliminated && p.id !== eliminatedPlayerId);
-            const activeUndercover = activePlayers.filter(p => p.role === 'undercover').length;
-            const activeMrWhite = activePlayers.filter(p => p.role === 'mrwhite').length;
-            const activeCivilian = activePlayers.filter(p => p.role === 'civilian').length;
+                let gameEnded = false;
+                let winner = null;
 
-            const eliminatedPlayer = players.find(p => p.id === eliminatedPlayerId);
-            
-            let gameEnded = false;
-            let winner = null;
-
-            // Si Mr. White fue eliminado, puede adivinar
-            if (eliminatedPlayer.role === 'mrwhite') {
-                // En un juego real, aquí habría un prompt, pero lo simplificamos
-                if (activeUndercover === 0) {
+                if (activeUndercover === 0 && activeMrWhite === 0) {
                     gameEnded = true;
                     winner = 'civilian';
+                } else if (activeCivilian <= activeUndercover + activeMrWhite) {
+                    gameEnded = true;
+                    winner = 'undercover';
                 }
-            } else if (activeUndercover === 0 && activeMrWhite === 0) {
-                // Todos los infiltrados eliminados
-                gameEnded = true;
-                winner = 'civilian';
-            } else if (activeCivilian <= activeUndercover + activeMrWhite) {
-                // Los infiltrados superan o igualan a los civiles
-                gameEnded = true;
-                winner = 'undercover';
-            }
 
-            if (gameEnded) {
-                await window.firebaseUpdate(
-                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
-                    { 
-                        status: 'finished',
-                        winner: winner
-                    }
-                );
-            } else {
-                await window.firebaseUpdate(
-                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
-                    { 
-                        status: 'playing',
-                        round: (roomData.round || 1) + 1
-                    }
-                );
+                if (gameEnded) {
+                    await window.firebaseUpdate(
+                        window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                        { 
+                            status: 'finished',
+                            winner: winner
+                        }
+                    );
+                } else {
+                    await window.firebaseUpdate(
+                        window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                        { 
+                            status: 'playing',
+                            round: (roomData.round || 1) + 1
+                        }
+                    );
+                }
+            } catch (error) {
+                console.error('Error:', error);
             }
         }
 
-        // Mostrar resultados finales
-        function showResultsScreen(roomData) {
+        function showResultsScreenFromUpdate(roomData) {
             hideAllScreens();
             document.getElementById('resultsScreen').classList.remove('hidden');
 
@@ -1044,7 +1064,6 @@
                 document.getElementById('resultMessage').textContent = 'Los infiltrados dominaron el juego';
             }
 
-            // Mostrar roles de todos
             const finalPlayersList = document.getElementById('finalPlayersList');
             finalPlayersList.innerHTML = '<h3 class="text-2xl font-bold mb-4">Roles Revelados</h3>';
             
@@ -1062,11 +1081,12 @@
                 };
 
                 const playerDiv = document.createElement('div');
-                playerDiv.className = 'bg-white/20 rounded-xl p-4 mb-2 flex items-center justify-between';
+                playerDiv.className = `bg-white/20 rounded-xl p-4 mb-2 flex items-center justify-between ${player.eliminated ? 'opacity-50' : ''}`;
                 playerDiv.innerHTML = `
                     <div class="flex items-center">
                         <span class="text-2xl mr-3">${roleIcons[player.role]}</span>
                         <span class="font-semibold">${player.name}</span>
+                        ${player.eliminated ? '<span class="ml-2 text-xs text-red-400">(Eliminado)</span>' : ''}
                     </div>
                     <span class="text-sm opacity-75">${roleNames[player.role]}</span>
                 `;
@@ -1074,7 +1094,6 @@
             });
         }
 
-        // Exponer funciones globales
         window.showHome = showHome;
         window.showRules = showRules;
         window.showCreateRoom = showCreateRoom;
@@ -1089,6 +1108,8 @@
         window.acknowledgeRole = acknowledgeRole;
         window.showVoting = showVoting;
         window.castVote = castVote;
+        window.continueGame = continueGame;
+        window.processVotes = processVotes;
     </script>
 </body>
 </html>
