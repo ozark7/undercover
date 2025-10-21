@@ -24,124 +24,175 @@
       const app = initializeApp(firebaseConfig);
       const db = getDatabase(app);
 
-      // -------------------------------
-      // 🔥 Lógica principal del juego
-      // -------------------------------
       let gameId = localStorage.getItem("gameId") || null;
+      let playerName = localStorage.getItem("playerName") || "";
       const playerNameInput = document.getElementById("playerName");
       const playerList = document.getElementById("playerList");
-      const setupDiv = document.getElementById("setup");
+      const gameArea = document.getElementById("gameArea");
+      const descInput = document.getElementById("descInput");
+      const descList = document.getElementById("descList");
+      const startBtn = document.getElementById("startGame");
 
+      const words = ["Perro", "Gato", "Computador", "Chocolate", "Café", "Sol", "Playa", "Escuela", "Montaña", "Avión"];
+
+      // Crear sala
       async function createGame() {
         const newGameRef = push(ref(db, "games"));
         gameId = newGameRef.key;
         localStorage.setItem("gameId", gameId);
-
         await set(newGameRef, {
           players: {},
           state: "waiting",
-          createdAt: Date.now()
+          descriptions: {}
         });
-
         alert(`🎮 Sala creada: ${gameId}`);
         listenGame();
       }
 
+      // Unirse a sala
       async function joinGame() {
-        const id = prompt("🔑 Ingresa el ID de la sala:");
+        const id = prompt("🔑 ID de la sala:");
         if (!id) return;
-
-        const gameRef = ref(db, "games/" + id);
-        const snapshot = await get(gameRef);
-        if (!snapshot.exists()) return alert("❌ Sala no encontrada");
-
+        const snap = await get(ref(db, "games/" + id));
+        if (!snap.exists()) return alert("❌ No existe esa sala");
         gameId = id;
         localStorage.setItem("gameId", gameId);
-        alert(`✅ Te uniste a la sala: ${id}`);
         listenGame();
       }
 
+      // Agregar jugador
       async function addPlayer() {
         const name = playerNameInput.value.trim();
-        if (!name) return alert("⚠️ Escribe un nombre antes de unirte.");
-        if (!gameId) return alert("🎮 Crea o únete a una sala primero.");
+        if (!name) return alert("⚠️ Escribe un nombre");
+        if (!gameId) return alert("🎮 Crea o únete a una sala");
 
-        const playerRef = ref(db, `games/${gameId}/players/${name}`);
-        await set(playerRef, {
+        playerName = name;
+        localStorage.setItem("playerName", name);
+
+        await set(ref(db, `games/${gameId}/players/${name}`), {
           name,
           alive: true,
-          joinedAt: Date.now()
+          role: "unknown"
         });
-
         playerNameInput.value = "";
       }
 
-      // 📡 Escucha en vivo los cambios de la sala
+      // Escucha en tiempo real
       function listenGame() {
-        const gameRef = ref(db, `games/${gameId}/players`);
-        onValue(gameRef, (snapshot) => {
-          const players = snapshot.val() || {};
-          const list = Object.values(players);
+        const gameRef = ref(db, `games/${gameId}`);
+        onValue(gameRef, (snap) => {
+          const data = snap.val();
+          if (!data) return;
 
-          playerList.innerHTML = list.length
-            ? list.map((p) => `
-              <li class="p-2 my-1 rounded-lg bg-purple-800/40 border border-purple-600/50 backdrop-blur-md shadow-md flex items-center justify-between">
-                <span class="font-semibold">${p.name}</span>
-                <span class="text-xs text-purple-300">${p.alive ? "🟢 Activo" : "🔴 Fuera"}</span>
-              </li>
-            `).join("")
-            : `<li class="text-gray-400 italic">Esperando jugadores...</li>`;
+          const players = data.players || {};
+          const state = data.state || "waiting";
+          const descriptions = data.descriptions || {};
+
+          renderPlayers(players);
+          renderDescriptions(descriptions);
+          handleState(state, players);
         });
+      }
+
+      // Mostrar lista de jugadores
+      function renderPlayers(players) {
+        const list = Object.values(players);
+        playerList.innerHTML = list.map(p =>
+          `<li>${p.name} ${!p.alive ? "💀" : ""}</li>`).join("");
+      }
+
+      // Mostrar descripciones
+      function renderDescriptions(descs) {
+        descList.innerHTML = Object.entries(descs)
+          .map(([player, text]) => `<li><b>${player}:</b> ${text}</li>`)
+          .join("");
+      }
+
+      // Cambia lo visible según la fase
+      function handleState(state, players) {
+        if (state === "waiting") {
+          gameArea.classList.add("hidden");
+          startBtn.classList.remove("hidden");
+        } else if (state === "in_progress") {
+          gameArea.classList.remove("hidden");
+          startBtn.classList.add("hidden");
+        }
+      }
+
+      // Iniciar partida (solo host)
+      async function startGame() {
+        const snap = await get(ref(db, `games/${gameId}/players`));
+        const players = Object.keys(snap.val() || {});
+        if (players.length < 3) return alert("Se necesitan al menos 3 jugadores");
+
+        const word = words[Math.floor(Math.random() * words.length)];
+        const mrWhite = players[Math.floor(Math.random() * players.length)];
+
+        // Asignar roles
+        for (const name of players) {
+          await update(ref(db, `games/${gameId}/players/${name}`), {
+            role: name === mrWhite ? "mrwhite" : "undercover",
+            word: name === mrWhite ? "???" : word
+          });
+        }
+
+        await update(ref(db, `games/${gameId}`), { state: "in_progress" });
+      }
+
+      // Enviar descripción
+      async function sendDescription() {
+        const text = descInput.value.trim();
+        if (!text) return;
+        await update(ref(db, `games/${gameId}/descriptions/${playerName}`), text);
+        descInput.value = "";
       }
 
       window.createGame = createGame;
       window.joinGame = joinGame;
       window.addPlayer = addPlayer;
+      window.startGame = startGame;
+      window.sendDescription = sendDescription;
 
-      // Si ya había una sala guardada, la reescucha automáticamente
       if (gameId) listenGame();
     </script>
 
     <style>
       @keyframes glow {
-        0%, 100% { text-shadow: 0 0 20px #9333ea, 0 0 40px #a855f7; }
+        0%,100% { text-shadow: 0 0 20px #9333ea, 0 0 40px #a855f7; }
         50% { text-shadow: 0 0 40px #c084fc, 0 0 80px #8b5cf6; }
       }
       .glow { animation: glow 2s infinite alternate; }
       .neon-border {
         border: 2px solid rgba(147, 51, 234, 0.5);
-        box-shadow: 0 0 20px rgba(147, 51, 234, 0.5),
-                    0 0 40px rgba(126, 34, 206, 0.4);
-      }
-      .fade-in {
-        animation: fadeIn 0.5s ease-in-out;
-      }
-      @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
+        box-shadow: 0 0 20px rgba(147, 51, 234, 0.5),0 0 40px rgba(126, 34, 206, 0.4);
       }
     </style>
   </head>
 
-  <body class="bg-gradient-to-br from-black via-purple-950 to-gray-900 text-white flex items-center justify-center min-h-screen font-sans">
-    <div id="app" class="max-w-lg w-full neon-border rounded-2xl shadow-2xl p-8 text-center bg-opacity-80 bg-gray-900 backdrop-blur-xl fade-in">
-      <h1 class="text-4xl font-extrabold glow mb-4 tracking-wide">🎭 UNDERCOVER</h1>
-      <p class="text-purple-300 italic mb-6">Juega online con tus panas 💜</p>
+  <body class="bg-gradient-to-br from-black via-purple-950 to-gray-900 text-white flex items-center justify-center min-h-screen">
+    <div class="max-w-lg w-full neon-border rounded-2xl shadow-2xl p-8 text-center bg-gray-900/90 backdrop-blur-xl">
+      <h1 class="text-4xl font-extrabold glow mb-4">🎭 UNDERCOVER</h1>
 
-      <div id="setup" class="space-y-4">
+      <div class="space-y-4">
         <div class="flex gap-2">
-          <button onclick="createGame()" class="flex-1 bg-green-600 hover:scale-105 p-3 rounded-lg font-semibold transition-all">🟢 Crear sala</button>
-          <button onclick="joinGame()" class="flex-1 bg-indigo-600 hover:scale-105 p-3 rounded-lg font-semibold transition-all">🔵 Unirse</button>
+          <button onclick="createGame()" class="flex-1 bg-green-600 p-3 rounded-lg font-semibold">🟢 Crear</button>
+          <button onclick="joinGame()" class="flex-1 bg-indigo-600 p-3 rounded-lg font-semibold">🔵 Unirse</button>
         </div>
 
-        <input id="playerName" type="text" placeholder="✍️ Tu nombre"
-          class="w-full p-3 rounded-lg bg-gray-800 text-white focus:ring-2 focus:ring-purple-500 focus:outline-none">
+        <input id="playerName" placeholder="✍️ Tu nombre" class="w-full p-3 rounded-lg bg-gray-800 text-white">
+        <button onclick="addPlayer()" class="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 p-3 rounded-lg font-semibold">➕ Agregar jugador</button>
 
-        <button onclick="addPlayer()" class="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:scale-105 transition-all p-3 rounded-lg font-semibold">
-          ➕ Agregar jugador
-        </button>
+        <ul id="playerList" class="text-left list-disc list-inside text-purple-300 pl-4"></ul>
 
-        <ul id="playerList" class="text-left text-purple-200 list-none space-y-2 mt-4"></ul>
+        <button id="startGame" onclick="startGame()" class="hidden w-full bg-yellow-600 p-3 rounded-lg font-bold mt-4">🚀 Iniciar partida</button>
+
+        <div id="gameArea" class="hidden mt-6 space-y-4">
+          <h2 class="text-lg font-bold text-purple-300">🗣️ Ronda de Descripciones</h2>
+          <ul id="descList" class="text-left text-purple-200 space-y-1"></ul>
+
+          <input id="descInput" placeholder="Tu descripción..." class="w-full p-2 rounded bg-gray-800">
+          <button onclick="sendDescription()" class="w-full bg-purple-600 p-2 rounded font-semibold">📤 Enviar</button>
+        </div>
       </div>
     </div>
   </body>
