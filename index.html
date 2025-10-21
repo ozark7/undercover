@@ -26,49 +26,51 @@
 
       let gameId = localStorage.getItem("gameId") || null;
       let playerName = localStorage.getItem("playerName") || "";
+      let isHost = false;
+
       const playerNameInput = document.getElementById("playerName");
       const playerList = document.getElementById("playerList");
+      const startBtn = document.getElementById("startGame");
       const gameArea = document.getElementById("gameArea");
+      const phaseTitle = document.getElementById("phaseTitle");
       const descInput = document.getElementById("descInput");
       const descList = document.getElementById("descList");
-      const startBtn = document.getElementById("startGame");
-      const secretWordArea = document.getElementById("secretWordArea");
-      const secretWordDisplay = document.getElementById("secretWordDisplay");
+      const nextBtn = document.getElementById("nextPhase");
 
-      const wordPairs = [
+      const words = [
         ["Perro", "Gato"],
-        ["Computador", "Laptop"],
-        ["Chocolate", "Cacao"],
-        ["Café", "Té"],
-        ["Sol", "Luna"],
         ["Playa", "Piscina"],
-        ["Escuela", "Universidad"],
-        ["Montaña", "Colina"],
-        ["Avión", "Helicóptero"]
+        ["Sol", "Luna"],
+        ["Café", "Chocolate"],
+        ["Avión", "Helicóptero"],
+        ["Escuela", "Universidad"]
       ];
 
       // Crear sala
       async function createGame() {
         const newGameRef = push(ref(db, "games"));
         gameId = newGameRef.key;
+        isHost = true;
         localStorage.setItem("gameId", gameId);
         await set(newGameRef, {
           players: {},
           state: "waiting",
+          turn: 0,
           descriptions: {},
-          round: 0
+          votes: {}
         });
         alert(`🎮 Sala creada: ${gameId}`);
         listenGame();
       }
 
-      // Unirse a sala
+      // Unirse
       async function joinGame() {
         const id = prompt("🔑 ID de la sala:");
         if (!id) return;
         const snap = await get(ref(db, "games/" + id));
         if (!snap.exists()) return alert("❌ No existe esa sala");
         gameId = id;
+        isHost = false;
         localStorage.setItem("gameId", gameId);
         listenGame();
       }
@@ -97,43 +99,49 @@
         onValue(gameRef, (snap) => {
           const data = snap.val();
           if (!data) return;
-
-          const players = data.players || {};
-          const state = data.state || "waiting";
-          const descriptions = data.descriptions || {};
-
-          renderPlayers(players);
-          renderDescriptions(descriptions);
-          handleState(state, players);
+          renderPlayers(data.players || {});
+          handleState(data);
         });
       }
 
-      // Mostrar jugadores
+      // Renderizar jugadores
       function renderPlayers(players) {
-        const list = Object.values(players);
-        playerList.innerHTML = list.map(p =>
-          `<li>${p.name} ${!p.alive ? "💀" : ""}</li>`).join("");
-      }
-
-      // Mostrar descripciones
-      function renderDescriptions(descs) {
-        descList.innerHTML = Object.entries(descs)
-          .map(([player, text]) => `<li><b>${player}:</b> ${text}</li>`)
+        playerList.innerHTML = Object.values(players)
+          .map(p => `<li>${p.name} ${!p.alive ? "💀" : ""}</li>`)
           .join("");
       }
 
-      // Manejar fase del juego
-      function handleState(state, players) {
-        if (state === "waiting") {
-          gameArea.classList.add("hidden");
-          startBtn.classList.remove("hidden");
-        } else if (state === "show_words") {
-          startBtn.classList.add("hidden");
-          secretWordArea.classList.remove("hidden");
-          gameArea.classList.add("hidden");
-        } else if (state === "in_progress") {
-          secretWordArea.classList.add("hidden");
-          gameArea.classList.remove("hidden");
+      // Control de fases
+      function handleState(game) {
+        const state = game.state;
+        const players = game.players || {};
+        const playerNames = Object.keys(players);
+
+        startBtn.classList.add("hidden");
+        gameArea.classList.remove("hidden");
+
+        switch (state) {
+          case "waiting":
+            phaseTitle.textContent = "Esperando jugadores...";
+            if (isHost) startBtn.classList.remove("hidden");
+            break;
+
+          case "show_word":
+            phaseTitle.textContent = "🔒 Revelando palabras";
+            showWordPhase(players, game.turn);
+            break;
+
+          case "descriptions":
+            phaseTitle.textContent = "🗣️ Ronda de descripciones";
+            descList.innerHTML = Object.entries(game.descriptions || {})
+              .map(([p, d]) => `<li><b>${p}:</b> ${d}</li>`)
+              .join("");
+            break;
+
+          case "voting":
+            phaseTitle.textContent = "🗳️ Votación en curso";
+            renderVoting(players);
+            break;
         }
       }
 
@@ -141,40 +149,56 @@
       async function startGame() {
         const snap = await get(ref(db, `games/${gameId}/players`));
         const players = Object.keys(snap.val() || {});
-        if (players.length < 3) return alert("⚠️ Se necesitan al menos 3 jugadores");
+        if (players.length < 3) return alert("Mínimo 3 jugadores");
 
-        const [word1, word2] = wordPairs[Math.floor(Math.random() * wordPairs.length)];
-        const mrWhite = players[Math.floor(Math.random() * players.length)];
-        const undercover = players.filter(p => p !== mrWhite)[Math.floor(Math.random() * (players.length - 1))];
+        // Asignar roles
+        const pair = words[Math.floor(Math.random() * words.length)];
+        const undercover = players[Math.floor(Math.random() * players.length)];
+        let mrWhite = undercover;
+        while (mrWhite === undercover) mrWhite = players[Math.floor(Math.random() * players.length)];
 
-        for (const name of players) {
-          let role = "citizen";
-          let word = word1;
-          if (name === mrWhite) {
+        for (const p of players) {
+          let role = "civil";
+          let word = pair[0];
+          if (p === undercover) {
+            role = "undercover";
+            word = pair[1];
+          } else if (p === mrWhite) {
             role = "mrwhite";
             word = "???";
-          } else if (name === undercover) {
-            role = "undercover";
-            word = word2;
           }
-
-          await update(ref(db, `games/${gameId}/players/${name}`), { role, word });
+          await update(ref(db, `games/${gameId}/players/${p}`), { role, word });
         }
 
-        await update(ref(db, `games/${gameId}`), { state: "show_words" });
+        await update(ref(db, `games/${gameId}`), { state: "show_word", turn: 0 });
       }
 
-      // Ver palabra secreta
-      async function showSecretWord() {
-        const snap = await get(ref(db, `games/${gameId}/players/${playerName}`));
-        if (!snap.exists()) return;
-        const data = snap.val();
-        secretWordDisplay.innerHTML = `<p class='text-2xl mt-3'>🕵️ Tu palabra es: <b>${data.word}</b></p>`;
+      // Mostrar palabra por turno
+      function showWordPhase(players, turn) {
+        const playerNames = Object.keys(players);
+        const current = playerNames[turn];
+        const player = players[playerName];
 
-        // Después de 5 segundos cambia a fase de descripción
-        setTimeout(async () => {
-          await update(ref(db, `games/${gameId}`), { state: "in_progress" });
-        }, 5000);
+        if (playerName === current) {
+          const word = players[playerName].word;
+          document.getElementById("wordReveal").classList.remove("hidden");
+          document.getElementById("wordText").textContent = `Tu palabra: ${word}`;
+          nextBtn.classList.remove("hidden");
+          nextBtn.onclick = async () => {
+            const nextTurn = turn + 1;
+            const nextState =
+              nextTurn >= playerNames.length ? "descriptions" : "show_word";
+            await update(ref(db, `games/${gameId}`), {
+              turn: nextTurn,
+              state: nextState
+            });
+            document.getElementById("wordReveal").classList.add("hidden");
+            nextBtn.classList.add("hidden");
+          };
+        } else {
+          document.getElementById("wordReveal").classList.add("hidden");
+          nextBtn.classList.add("hidden");
+        }
       }
 
       // Enviar descripción
@@ -185,25 +209,37 @@
         descInput.value = "";
       }
 
+      // Render votación
+      function renderVoting(players) {
+        const container = document.getElementById("votingArea");
+        container.innerHTML = Object.keys(players)
+          .filter(p => players[p].alive)
+          .map(p => `<button class="bg-red-600 p-2 m-1 rounded" onclick="vote('${p}')">${p}</button>`)
+          .join("");
+      }
+
+      // Votar
+      async function vote(name) {
+        await update(ref(db, `games/${gameId}/votes/${playerName}`), name);
+      }
+
       window.createGame = createGame;
       window.joinGame = joinGame;
       window.addPlayer = addPlayer;
       window.startGame = startGame;
-      window.showSecretWord = showSecretWord;
       window.sendDescription = sendDescription;
-
-      if (gameId) listenGame();
+      window.vote = vote;
     </script>
 
     <style>
       @keyframes glow {
-        0%,100% { text-shadow: 0 0 20px #9333ea, 0 0 40px #a855f7; }
+        0%, 100% { text-shadow: 0 0 20px #9333ea, 0 0 40px #a855f7; }
         50% { text-shadow: 0 0 40px #c084fc, 0 0 80px #8b5cf6; }
       }
       .glow { animation: glow 2s infinite alternate; }
       .neon-border {
         border: 2px solid rgba(147, 51, 234, 0.5);
-        box-shadow: 0 0 20px rgba(147, 51, 234, 0.5),0 0 40px rgba(126, 34, 206, 0.4);
+        box-shadow: 0 0 20px rgba(147, 51, 234, 0.5), 0 0 40px rgba(126, 34, 206, 0.4);
       }
     </style>
   </head>
@@ -225,20 +261,22 @@
 
         <button id="startGame" onclick="startGame()" class="hidden w-full bg-yellow-600 p-3 rounded-lg font-bold mt-4">🚀 Iniciar partida</button>
 
-        <!-- Palabra secreta -->
-        <div id="secretWordArea" class="hidden mt-6 space-y-3">
-          <h2 class="text-lg font-bold text-purple-300">👁 Ver palabra secreta</h2>
-          <button onclick="showSecretWord()" class="w-full bg-purple-600 p-3 rounded-lg font-semibold">👁 Mostrar palabra</button>
-          <div id="secretWordDisplay" class="text-xl text-purple-200"></div>
-        </div>
-
-        <!-- Descripciones -->
         <div id="gameArea" class="hidden mt-6 space-y-4">
-          <h2 class="text-lg font-bold text-purple-300">🗣️ Ronda de Descripciones</h2>
-          <ul id="descList" class="text-left text-purple-200 space-y-1"></ul>
+          <h2 id="phaseTitle" class="text-lg font-bold text-purple-300"></h2>
 
-          <input id="descInput" placeholder="Tu descripción..." class="w-full p-2 rounded bg-gray-800">
-          <button onclick="sendDescription()" class="w-full bg-purple-600 p-2 rounded font-semibold">📤 Enviar</button>
+          <div id="wordReveal" class="hidden bg-gray-800 p-4 rounded-lg">
+            <p id="wordText" class="text-xl font-semibold text-yellow-400"></p>
+          </div>
+
+          <div id="descPhase">
+            <ul id="descList" class="text-left text-purple-200 space-y-1"></ul>
+            <input id="descInput" placeholder="Tu descripción..." class="w-full p-2 rounded bg-gray-800 mt-2">
+            <button onclick="sendDescription()" class="w-full bg-purple-600 p-2 rounded font-semibold">📤 Enviar</button>
+          </div>
+
+          <div id="votingArea" class="space-y-2"></div>
+
+          <button id="nextPhase" class="hidden bg-blue-600 p-2 rounded mt-4">⏭️ Siguiente</button>
         </div>
       </div>
     </div>
