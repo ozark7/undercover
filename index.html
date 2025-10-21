@@ -8,7 +8,15 @@
 
     <script type="module">
       import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-      import { getDatabase, ref, set, onValue, get, push, update } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
+      import {
+        getDatabase,
+        ref,
+        set,
+        onValue,
+        get,
+        push,
+        update,
+      } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
 
       const firebaseConfig = {
         apiKey: "AIzaSyCob3LEUMLwlCXAiGzheIuGmYQhArpHQ_k",
@@ -18,7 +26,7 @@
         messagingSenderId: "756599146063",
         appId: "1:756599146063:web:0e9de4a385b2f8c11fcc3a",
         measurementId: "G-EW0ZL3GNTK",
-        databaseURL: "https://undercover-37256-default-rtdb.firebaseio.com"
+        databaseURL: "https://undercover-37256-default-rtdb.firebaseio.com",
       };
 
       const app = initializeApp(firebaseConfig);
@@ -43,7 +51,7 @@
         ["Sol", "Luna"],
         ["Café", "Chocolate"],
         ["Avión", "Helicóptero"],
-        ["Escuela", "Universidad"]
+        ["Escuela", "Universidad"],
       ];
 
       // Crear sala
@@ -57,7 +65,7 @@
           state: "waiting",
           turn: 0,
           descriptions: {},
-          votes: {}
+          votes: {},
         });
         alert(`🎮 Sala creada: ${gameId}`);
         listenGame();
@@ -88,7 +96,7 @@
           name,
           alive: true,
           role: "unknown",
-          word: ""
+          word: "",
         });
         playerNameInput.value = "";
       }
@@ -107,7 +115,7 @@
       // Renderizar jugadores
       function renderPlayers(players) {
         playerList.innerHTML = Object.values(players)
-          .map(p => `<li>${p.name} ${!p.alive ? "💀" : ""}</li>`)
+          .map((p) => `<li>${p.name} ${!p.alive ? "💀" : ""}</li>`)
           .join("");
       }
 
@@ -128,7 +136,19 @@
 
           case "show_word":
             phaseTitle.textContent = "🔒 Revelando palabras";
-            showWordPhase(players, game.turn);
+            const word = players[playerName]?.word || "";
+            document.getElementById("wordReveal").classList.remove("hidden");
+            document.getElementById(
+              "wordText"
+            ).textContent = `Tu palabra: ${word}`;
+            nextBtn.classList.remove("hidden");
+            nextBtn.onclick = async () => {
+              await update(ref(db, `games/${gameId}`), {
+                state: "descriptions",
+              });
+              document.getElementById("wordReveal").classList.add("hidden");
+              nextBtn.classList.add("hidden");
+            };
             break;
 
           case "descriptions":
@@ -155,7 +175,8 @@
         const pair = words[Math.floor(Math.random() * words.length)];
         const undercover = players[Math.floor(Math.random() * players.length)];
         let mrWhite = undercover;
-        while (mrWhite === undercover) mrWhite = players[Math.floor(Math.random() * players.length)];
+        while (mrWhite === undercover)
+          mrWhite = players[Math.floor(Math.random() * players.length)];
 
         for (const p of players) {
           let role = "civil";
@@ -170,7 +191,10 @@
           await update(ref(db, `games/${gameId}/players/${p}`), { role, word });
         }
 
-        await update(ref(db, `games/${gameId}`), { state: "show_word", turn: 0 });
+        await update(ref(db, `games/${gameId}`), {
+          state: "show_word",
+          turn: 0,
+        });
       }
 
       // Mostrar palabra por turno
@@ -182,7 +206,9 @@
         if (playerName === current) {
           const word = players[playerName].word;
           document.getElementById("wordReveal").classList.remove("hidden");
-          document.getElementById("wordText").textContent = `Tu palabra: ${word}`;
+          document.getElementById(
+            "wordText"
+          ).textContent = `Tu palabra: ${word}`;
           nextBtn.classList.remove("hidden");
           nextBtn.onclick = async () => {
             const nextTurn = turn + 1;
@@ -190,7 +216,7 @@
               nextTurn >= playerNames.length ? "descriptions" : "show_word";
             await update(ref(db, `games/${gameId}`), {
               turn: nextTurn,
-              state: nextState
+              state: nextState,
             });
             document.getElementById("wordReveal").classList.add("hidden");
             nextBtn.classList.add("hidden");
@@ -205,7 +231,10 @@
       async function sendDescription() {
         const text = descInput.value.trim();
         if (!text) return;
-        await update(ref(db, `games/${gameId}/descriptions/${playerName}`), text);
+        await update(
+          ref(db, `games/${gameId}/descriptions/${playerName}`),
+          text
+        );
         descInput.value = "";
       }
 
@@ -213,8 +242,11 @@
       function renderVoting(players) {
         const container = document.getElementById("votingArea");
         container.innerHTML = Object.keys(players)
-          .filter(p => players[p].alive)
-          .map(p => `<button class="bg-red-600 p-2 m-1 rounded" onclick="vote('${p}')">${p}</button>`)
+          .filter((p) => players[p].alive)
+          .map(
+            (p) =>
+              `<button class="bg-red-600 p-2 m-1 rounded" onclick="vote('${p}')">${p}</button>`
+          )
           .join("");
       }
 
@@ -233,33 +265,73 @@
 
     <style>
       @keyframes glow {
-        0%, 100% { text-shadow: 0 0 20px #9333ea, 0 0 40px #a855f7; }
-        50% { text-shadow: 0 0 40px #c084fc, 0 0 80px #8b5cf6; }
+        0%,
+        100% {
+          text-shadow: 0 0 20px #9333ea, 0 0 40px #a855f7;
+        }
+        50% {
+          text-shadow: 0 0 40px #c084fc, 0 0 80px #8b5cf6;
+        }
       }
-      .glow { animation: glow 2s infinite alternate; }
+      .glow {
+        animation: glow 2s infinite alternate;
+      }
       .neon-border {
         border: 2px solid rgba(147, 51, 234, 0.5);
-        box-shadow: 0 0 20px rgba(147, 51, 234, 0.5), 0 0 40px rgba(126, 34, 206, 0.4);
+        box-shadow: 0 0 20px rgba(147, 51, 234, 0.5),
+          0 0 40px rgba(126, 34, 206, 0.4);
       }
     </style>
   </head>
 
-  <body class="bg-gradient-to-br from-black via-purple-950 to-gray-900 text-white flex items-center justify-center min-h-screen">
-    <div class="max-w-lg w-full neon-border rounded-2xl shadow-2xl p-8 text-center bg-gray-900/90 backdrop-blur-xl">
+  <body
+    class="bg-gradient-to-br from-black via-purple-950 to-gray-900 text-white flex items-center justify-center min-h-screen"
+  >
+    <div
+      class="max-w-lg w-full neon-border rounded-2xl shadow-2xl p-8 text-center bg-gray-900/90 backdrop-blur-xl"
+    >
       <h1 class="text-4xl font-extrabold glow mb-4">🎭 UNDERCOVER</h1>
 
       <div class="space-y-4">
         <div class="flex gap-2">
-          <button onclick="createGame()" class="flex-1 bg-green-600 p-3 rounded-lg font-semibold">🟢 Crear</button>
-          <button onclick="joinGame()" class="flex-1 bg-indigo-600 p-3 rounded-lg font-semibold">🔵 Unirse</button>
+          <button
+            onclick="createGame()"
+            class="flex-1 bg-green-600 p-3 rounded-lg font-semibold"
+          >
+            🟢 Crear
+          </button>
+          <button
+            onclick="joinGame()"
+            class="flex-1 bg-indigo-600 p-3 rounded-lg font-semibold"
+          >
+            🔵 Unirse
+          </button>
         </div>
 
-        <input id="playerName" placeholder="✍️ Tu nombre" class="w-full p-3 rounded-lg bg-gray-800 text-white">
-        <button onclick="addPlayer()" class="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 p-3 rounded-lg font-semibold">➕ Agregar jugador</button>
+        <input
+          id="playerName"
+          placeholder="✍️ Tu nombre"
+          class="w-full p-3 rounded-lg bg-gray-800 text-white"
+        />
+        <button
+          onclick="addPlayer()"
+          class="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 p-3 rounded-lg font-semibold"
+        >
+          ➕ Agregar jugador
+        </button>
 
-        <ul id="playerList" class="text-left list-disc list-inside text-purple-300 pl-4"></ul>
+        <ul
+          id="playerList"
+          class="text-left list-disc list-inside text-purple-300 pl-4"
+        ></ul>
 
-        <button id="startGame" onclick="startGame()" class="hidden w-full bg-yellow-600 p-3 rounded-lg font-bold mt-4">🚀 Iniciar partida</button>
+        <button
+          id="startGame"
+          onclick="startGame()"
+          class="hidden w-full bg-yellow-600 p-3 rounded-lg font-bold mt-4"
+        >
+          🚀 Iniciar partida
+        </button>
 
         <div id="gameArea" class="hidden mt-6 space-y-4">
           <h2 id="phaseTitle" class="text-lg font-bold text-purple-300"></h2>
@@ -270,13 +342,24 @@
 
           <div id="descPhase">
             <ul id="descList" class="text-left text-purple-200 space-y-1"></ul>
-            <input id="descInput" placeholder="Tu descripción..." class="w-full p-2 rounded bg-gray-800 mt-2">
-            <button onclick="sendDescription()" class="w-full bg-purple-600 p-2 rounded font-semibold">📤 Enviar</button>
+            <input
+              id="descInput"
+              placeholder="Tu descripción..."
+              class="w-full p-2 rounded bg-gray-800 mt-2"
+            />
+            <button
+              onclick="sendDescription()"
+              class="w-full bg-purple-600 p-2 rounded font-semibold"
+            >
+              📤 Enviar
+            </button>
           </div>
 
           <div id="votingArea" class="space-y-2"></div>
 
-          <button id="nextPhase" class="hidden bg-blue-600 p-2 rounded mt-4">⏭️ Siguiente</button>
+          <button id="nextPhase" class="hidden bg-blue-600 p-2 rounded mt-4">
+            ⏭️ Siguiente
+          </button>
         </div>
       </div>
     </div>
