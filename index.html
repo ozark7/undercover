@@ -1,538 +1,1094 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>🎭 Undercover - Multiplayer (Firebase)</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-
-  <script type="module">
-    // ---------- FIREBASE (modular) ----------
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-    import {
-      getDatabase, ref, set, push, update, onValue, get
-    } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
-
-    // ---------- CONFIG (usa la tuya si quieres) ----------
-    const firebaseConfig = {
-      apiKey: "AIzaSyCob3LEUMLwlCXAiGzheIuGmYQhArpHQ_k",
-      authDomain: "undercover-37256.firebaseapp.com",
-      projectId: "undercover-37256",
-      storageBucket: "undercover-37256.firebasestorage.app",
-      messagingSenderId: "756599146063",
-      appId: "1:756599146063:web:0e9de4a385b2f8c11fcc3a",
-      databaseURL: "https://undercover-37256-default-rtdb.firebaseio.com"
-    };
-    const app = initializeApp(firebaseConfig);
-    const db = getDatabase(app);
-
-    // ---------- palabras por paquete (ejemplos) ----------
-    const PACKS = {
-      "Animales": [["Perro","Lobo"],["Gato","Conejo"],["Pez","Ballena"]],
-      "Comida": [["Pizza","Empanada"],["Café","Té"],["Chocolate","Cacao"]],
-      "Objetos": [["Llave","Candado"],["Mesa","Silla"]]
-    };
-
-    // ---------- estado local ----------
-    let gameId = localStorage.getItem("gameId") || null;
-    let playerName = localStorage.getItem("playerName") || "";
-    let isHost = false;
-
-    // ---------- helpers DOM ----------
-    const $ = id => document.getElementById(id);
-
-    // ---------- UI inicial: crear / opciones ----------
-    function readOptionsFromUI(){
-      return {
-        pack: $('packSelect').value,
-        customWord: $('customWord').value.trim(),
-        anonymousVoting: $('anonVote').checked,
-        mrwhiteRestrictions: $('mrwhiteRestrict').value // "any","noFirst","noTwoFirst"
-      };
-    }
-
-    // ---------- Crear sala ----------
-    async function createRoom(){
-      const newRef = push(ref(db,'games'));
-      gameId = newRef.key;
-      isHost = true;
-      localStorage.setItem("gameId", gameId);
-
-      const opts = readOptionsFromUI();
-      await set(newRef, {
-        host: null,
-        players: {},
-        state: 'waiting',
-        options: opts,
-        revealOrder: [],
-        revealIndex: 0,
-        speakOrder: [],
-        spoken: {},
-        votes: {},
-        lastEliminated: null,
-        round: 0
-      });
-      $('roomId').textContent = gameId;
-      listenGame();
-      renderUI();
-      alert('Sala creada: ' + gameId);
-    }
-
-    // ---------- Unirse ----------
-    async function joinRoom(){
-      const id = prompt("ID de sala:");
-      if(!id) return;
-      const snap = await get(ref(db, `games/${id}`));
-      if(!snap.exists()) return alert('Sala no encontrada');
-      gameId = id;
-      isHost = false;
-      localStorage.setItem("gameId", gameId);
-      $('roomId').textContent = gameId;
-      listenGame();
-      renderUI();
-    }
-
-    // ---------- Añadir jugador ----------
-    async function addPlayer(){
-      const name = $('username').value.trim();
-      if(!name) return alert('Escribe tu nombre');
-      if(!gameId) return alert('Crea o únete a una sala antes');
-      playerName = name;
-      localStorage.setItem('playerName', playerName);
-
-      // add player node
-      await update(ref(db, `games/${gameId}/players/${name}`), {
-        name, alive: true, role: "unknown", word: ""
-      });
-
-      // set host if none
-      const hostSnap = await get(ref(db, `games/${gameId}/host`));
-      if(!hostSnap.exists()) {
-        await set(ref(db, `games/${gameId}/host`), name);
-        alert('Eres host de la sala');
-        isHost = true;
-      }
-      $('username').value = '';
-    }
-
-    // ---------- Escuchar sala en tiempo real ----------
-    function listenGame(){
-      if(!gameId) return;
-      const gameRef = ref(db, `games/${gameId}`);
-      onValue(gameRef, snap=>{
-        const game = snap.val();
-        if(!game) return;
-        // render players list
-        const players = game.players || {};
-        $('playersList').innerHTML = Object.values(players).map(p=>`<li class="py-1">${p.name} ${!p.alive?'💀':''}</li>`).join('') || '<li class="text-gray-400">Sin jugadores</li>';
-        // show state and UI updates
-        renderGameState(game);
-      });
-    }
-
-    // ---------- START PARTIDA (host) ----------
-    async function startGame(){
-      if(!isHost) return alert('Solo el host puede iniciar');
-      const playersSnap = await get(ref(db, `games/${gameId}/players`));
-      const players = Object.keys(playersSnap.val() || {});
-      if(players.length < 3) return alert('Se necesitan al menos 3 jugadores');
-
-      // read options
-      const optsSnap = await get(ref(db, `games/${gameId}/options`));
-      const opts = optsSnap.val() || {};
-      // choose word pair
-      let pair;
-      if(opts.customWord) {
-        // if custom provided, pair second can be generated fuzzily — for simplicity, pick a fallback
-        pair = [opts.customWord, opts.customWord + " (parecido)"];
-      } else {
-        const pack = PACKS[opts.pack] || PACKS['Animales'];
-        pair = pack[Math.floor(Math.random()*pack.length)];
-      }
-
-      // determine allowed mrwhite positions
-      // build shuffled and then choose mrwhite ensuring restriction
-      const shuffled = [...players].sort(()=>Math.random()-0.5);
-      let mrwhite = shuffled[0];
-      let undercover = shuffled[1];
-      // apply restriction
-      if(opts.mrwhiteRestrictions === 'noFirst'){
-        if(mrwhite === players[0]) mrwhite = shuffled[2] || shuffled[0];
-      } else if(opts.mrwhiteRestrictions === 'noTwoFirst'){
-        if(players.length>=2 && (mrwhite===players[0]||mrwhite===players[1])) mrwhite = shuffled.find(p => p!==players[0] && p!==players[1]) || mrwhite;
-      }
-
-      // assign roles & words
-      for(const p of players){
-        let role='civil', word = pair[0];
-        if(p === undercover){ role='undercover'; word = pair[1]; }
-        if(p === mrwhite){ role='mrwhite'; word = '???'; }
-        await update(ref(db, `games/${gameId}/players/${p}`), { role, word });
-      }
-
-      // prepare reveal order and speak order (random)
-      const revealOrder = [...players].sort(()=>Math.random()-0.5);
-      const speakOrder = [...players].sort(()=>Math.random()-0.5);
-      await update(ref(db, `games/${gameId}`), {
-        state: 'reveal',
-        revealOrder,
-        revealIndex: 0,
-        speakOrder,
-        spoken: {},
-        votes: {},
-        lastEliminated: null,
-        round: (await get(ref(db, `games/${gameId}/round`))).val() ? (await get(ref(db, `games/${gameId}/round`))).val()+1 : 1
-      });
-    }
-
-    // ---------- Host avanza la revelación (siguiente jugador ve su palabra) ----------
-    async function hostNextReveal(){
-      if(!isHost) return;
-      const snap = await get(ref(db, `games/${gameId}`));
-      const g = snap.val();
-      const idx = (g.revealIndex || 0) + 1;
-      if(idx >= (g.revealOrder||[]).length){
-        // finished reveals -> go to speaking
-        await update(ref(db, `games/${gameId}`), { revealIndex: idx, state: 'speaking' });
-      } else {
-        await update(ref(db, `games/${gameId}`), { revealIndex: idx });
-      }
-    }
-
-    // ---------- Host inicia speaking o marca hablante hecho ----------
-    async function hostMarkSpoken(){
-      if(!isHost) return;
-      const snap = await get(ref(db, `games/${gameId}`));
-      const g = snap.val();
-      const spoken = g.spoken || {};
-      const order = g.speakOrder || [];
-      const next = order.find(p => !spoken[p]);
-      if(next) {
-        spoken[next] = true;
-        await update(ref(db, `games/${gameId}/spoken`), spoken);
-      }
-      // check if all spoken
-      const still = order.find(p => !spoken[p]);
-      if(!still){
-        await update(ref(db, `games/${gameId}`), { state: 'voting' });
-      } else {
-        await update(ref(db, `games/${gameId}`), { spoken });
-      }
-    }
-
-    // ---------- Render estado del juego ----------
-    function renderGameState(game){
-      const state = game.state || 'waiting';
-      $('stateLabel').textContent = state.toUpperCase();
-
-      // show/hide panels
-      $('panelWaiting').classList.toggle('hidden', state!=='waiting');
-      $('panelReveal').classList.toggle('hidden', state!=='reveal');
-      $('panelSpeak').classList.toggle('hidden', state!=='speaking');
-      $('panelVoting').classList.toggle('hidden', state!=='voting');
-      $('panelEnded').classList.toggle('hidden', state!=='ended');
-
-      // reveal: only show word to the current reveal player
-      if(state === 'reveal'){
-        const order = game.revealOrder || [];
-        const idx = game.revealIndex || 0;
-        const current = order[idx];
-        if(playerName === current){
-          // show your word
-          const myWord = game.players && game.players[playerName] && game.players[playerName].word;
-          $('myWordText').textContent = myWord ? `Tu palabra: ${myWord}` : 'No asignada';
-          $('myWordBox').classList.remove('hidden');
-        } else {
-          $('myWordBox').classList.add('hidden');
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Undercover Mr. White - Juego Multijugador</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .fade-in {
+            animation: fadeIn 0.3s ease-in;
         }
-        // host controls visible
-        $('hostControls').classList.toggle('hidden', !isHost);
-      }
-
-      // speaking: show who is next to speak
-      if(state === 'speaking'){
-        const order = game.speakOrder || [];
-        const spoken = game.spoken || {};
-        const next = order.find(p => !spoken[p]);
-        $('speakNext').textContent = next ? `Turno para: ${next}` : 'Todos hablaron';
-        $('hostControls').classList.toggle('hidden', !isHost);
-        $('myWordBox').classList.add('hidden'); // hide word during speaking
-      }
-
-      // voting: render vote buttons (if not anonymous -> show names; if anonymous -> also use same but votes stored)
-      if(state === 'voting'){
-        const players = game.players || {};
-        const alive = Object.keys(players).filter(p => players[p].alive);
-        const opts = game.options || {};
-        // render voting buttons
-        $('votingButtons').innerHTML = alive.map(p => `<button class="voteButton bg-red-600 px-3 py-2 rounded m-1" onclick="castVote('${p}')">${p}</button>`).join('');
-        $('hostVotingControls').classList.toggle('hidden', !isHost);
-      }
-
-      // ended: show result
-      if(state === 'ended'){
-        $('endText').textContent = game.result || 'Partida finalizada';
-      }
-
-      // last eliminated
-      if(game.lastEliminated){
-        $('lastElim').textContent = `${game.lastEliminated.name} — rol: ${game.lastEliminated.role}`;
-      }
-    }
-
-    // ---------- votar (player) ----------
-    async function castVote(target){
-      if(!playerName) return alert('Regístrate antes de votar');
-      if(!gameId) return;
-      await update(ref(db, `games/${gameId}/votes/${playerName}`), target);
-      alert('Votado por ' + target);
-    }
-
-    // ---------- host confirma votos (tally) ----------
-    async function hostConfirmVotes(){
-      if(!isHost) return;
-      const snap = await get(ref(db, `games/${gameId}`));
-      const g = snap.val();
-      const votes = g.votes || {};
-      if(Object.keys(votes).length === 0) return alert('No hay votos aún');
-      // tally
-      const tally = {};
-      Object.values(votes).forEach(v => tally[v] = (tally[v]||0)+1 );
-      let max = -1, chosen = null;
-      for(const [k,v] of Object.entries(tally)){
-        if(v > max){ max = v; chosen = k; }
-      }
-      if(!chosen) return alert('No se pudo determinar');
-      // eliminate
-      const pSnap = await get(ref(db, `games/${gameId}/players/${chosen}`));
-      const p = pSnap.val();
-      if(!p) return;
-      await update(ref(db, `games/${gameId}/players/${chosen}`), { alive: false });
-      await update(ref(db, `games/${gameId}`), { lastEliminated: { name: chosen, role: p.role || 'unknown' } });
-      // clear votes
-      await set(ref(db, `games/${gameId}/votes`), {});
-      // if mrwhite eliminated -> let them guess via UI
-      if(p.role === 'mrwhite'){
-        await update(ref(db, `games/${gameId}`), { state: 'mrwhite_guess', mrwhiteToGuess: chosen });
-      } else {
-        await checkWinnerAndNext();
-      }
-    }
-
-    // ---------- mrwhite guess (if eliminated) ----------
-    async function mrwhiteGuessSubmit(){
-      const guess = $('mrwhiteGuess').value.trim();
-      if(!guess) return alert('Escribe una palabra');
-      const snap = await get(ref(db, `games/${gameId}`));
-      const g = snap.val();
-      // find civil base word (first non ???)
-      let base = null;
-      for(const [k,v] of Object.entries(g.players||{})){
-        if(v.word && v.word !== '???'){ base = v.word; break; }
-      }
-      if(base && guess.toLowerCase() === base.toLowerCase()){
-        await update(ref(db, `games/${gameId}`), { state: 'ended', result: `Mr White adivinó y gana: ${guess}` });
-        return;
-      } else {
-        alert('Falló la adivinanza. El juego continúa');
-        await update(ref(db, `games/${gameId}`), { mrwhiteToGuess: null, state: 'continue_after_mrwhite' });
-        await checkWinnerAndNext();
-      }
-    }
-
-    // ---------- check winners & next round ----------
-    async function checkWinnerAndNext(){
-      const snap = await get(ref(db, `games/${gameId}`));
-      const g = snap.val();
-      const players = g.players || {};
-      const alive = Object.keys(players).filter(p => players[p].alive);
-      const underAlive = alive.find(p => players[p].role === 'undercover');
-      const whiteAlive = alive.find(p => players[p].role === 'mrwhite');
-
-      if(!underAlive && !whiteAlive){
-        await update(ref(db, `games/${gameId}`), { state: 'ended', result: 'Civiles ganaron' });
-        return;
-      }
-      if(alive.length <= 2 && (underAlive || whiteAlive)){
-        await update(ref(db, `games/${gameId}`), { state: 'ended', result: 'Undercover/MrWhite ganaron' });
-        return;
-      }
-
-      // prepare next round (alive players)
-      const aliveOrder = alive.sort(()=>Math.random()-0.5);
-      await update(ref(db, `games/${gameId}`), {
-        state: 'reveal',
-        revealOrder: aliveOrder,
-        revealIndex: 0,
-        speakOrder: aliveOrder.map(x=>x).sort(()=>Math.random()-0.5),
-        spoken: {},
-        votes: {},
-        lastEliminated: null,
-        round: (g.round||0) + 1
-      });
-    }
-
-    // ---------- utility / UI render ----------
-    function renderUI(){
-      $('roomControls').classList.toggle('hidden', !!gameId);
-      $('inRoomControls').classList.toggle('hidden', !gameId);
-      $('roomId').textContent = gameId || '—';
-      $('youName').textContent = playerName ? `Tú: ${playerName}` : '';
-      $('hostBadge').classList.toggle('hidden', !isHost);
-    }
-
-    // ---------- wire to window ----------
-    window.createRoom = createRoom;
-    window.joinRoom = joinRoom;
-    window.addPlayer = addPlayer;
-    window.startGame = startGame;
-    window.hostNextReveal = hostNextReveal;
-    window.hostMarkSpoken = hostMarkSpoken;
-    window.castVote = castVote;
-    window.hostConfirmVotes = hostConfirmVotes;
-    window.mrwhiteGuessSubmit = mrwhiteGuessSubmit;
-    window.renderUI = renderUI;
-
-    // ---------- start listening if saved ----------
-    if(gameId) { listenGame(); renderUI(); }
-  </script>
-
-  <style>
-    .neon { text-shadow: 0 0 12px rgba(167,139,250,0.9); }
-  </style>
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .blur-word {
+            filter: blur(8px);
+            user-select: none;
+        }
+        .pulse-animation {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
 </head>
-<body class="min-h-screen bg-gradient-to-br from-black via-purple-950 to-gray-900 text-white flex items-center justify-center p-6">
-  <div class="w-full max-w-4xl bg-gray-900/80 rounded-2xl p-6 neon shadow-2xl">
-    <header class="flex items-center justify-between">
-      <h1 class="text-2xl font-extrabold text-fuchsia-400">🎭 Undercover - Online</h1>
-      <div class="text-sm text-gray-300">
-        Sala: <span id="roomId">—</span> · <span id="youName"></span>
-        <span id="hostBadge" class="ml-3 px-2 py-1 bg-yellow-500 rounded hidden text-black">HOST</span>
-      </div>
-    </header>
-
-    <main class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-6">
-      <!-- Left: Config / Lobby -->
-      <section class="col-span-1 bg-gray-800 p-4 rounded-lg">
-        <h3 class="font-semibold text-lg mb-2">Nueva Partida</h3>
-
-        <label class="text-sm text-gray-300">Paquete de palabras</label>
-        <select id="packSelect" class="w-full p-2 rounded bg-gray-700 mb-2">
-          <option>Animales</option>
-          <option>Comida</option>
-          <option>Objetos</option>
-        </select>
-
-        <label class="text-sm text-gray-300">Palabra personalizada (opcional)</label>
-        <input id="customWord" placeholder="Dejar vacío para usar paquete" class="w-full p-2 rounded bg-gray-700 mb-2"/>
-
-        <label class="flex items-center gap-2"><input id="anonVote" type="checkbox" checked/> Votación anónima</label>
-        <label class="block mt-2 text-sm">¿Quién puede ser Mr White?</label>
-        <select id="mrwhiteRestrict" class="w-full p-2 rounded bg-gray-700 mb-3">
-          <option value="any">Cualquiera</option>
-          <option value="noFirst">No el primer jugador</option>
-          <option value="noTwoFirst">No los dos primeros</option>
-        </select>
-
-        <div id="roomControls" class="space-y-2">
-          <button onclick="createRoom()" class="w-full bg-green-600 p-2 rounded">🟢 Crear sala</button>
-          <button onclick="joinRoom()" class="w-full bg-indigo-600 p-2 rounded">🔵 Unirse a sala</button>
+<body class="bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 min-h-screen text-white">
+    
+    <!-- Pantalla Principal -->
+    <div id="homeScreen" class="container mx-auto px-4 py-8">
+        <div class="text-center mb-12">
+            <h1 class="text-5xl md:text-6xl font-bold mb-4 bg-gradient-to-r from-yellow-400 to-pink-500 text-transparent bg-clip-text">
+                Undercover Mr. White
+            </h1>
+            <p class="text-xl md:text-2xl text-gray-300 mb-2">
+                El juego de fiesta donde todos reciben una palabra secreta...
+            </p>
+            <p class="text-lg text-yellow-400 font-semibold">
+                ¡excepto los Undercover y Mr. White!
+            </p>
         </div>
 
-        <div id="inRoomControls" class="hidden space-y-2">
-          <input id="username" placeholder="Tu nombre" class="w-full p-2 rounded bg-gray-700"/>
-          <button id="btnAdd" onclick="addPlayer()" class="w-full bg-purple-600 p-2 rounded">➕ Entrar a la sala</button>
+        <div class="max-w-2xl mx-auto bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl mb-8">
+            <button onclick="showCreateRoom()" class="w-full bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-600 hover:to-purple-700 text-white font-bold text-2xl py-6 rounded-2xl transition-all transform hover:scale-105 shadow-lg mb-4">
+                🎮 Crear Sala
+            </button>
+            
+            <button onclick="showJoinRoom()" class="w-full bg-gradient-to-r from-blue-500 to-cyan-600 hover:from-blue-600 hover:to-cyan-700 text-white font-bold text-2xl py-6 rounded-2xl transition-all transform hover:scale-105 shadow-lg mb-4">
+                🚪 Unirse a Sala
+            </button>
+            
+            <button onclick="showRules()" class="w-full bg-white/20 hover:bg-white/30 text-white font-semibold text-lg py-4 rounded-xl transition-all">
+                📖 ¿Cómo Jugar?
+            </button>
         </div>
 
-        <hr class="my-3 border-gray-700"/>
-
-        <h4 class="text-sm text-gray-300">Jugadores</h4>
-        <ul id="playersList" class="text-left mt-2 text-purple-200"></ul>
-      </section>
-
-      <!-- Middle: Flow / Controls -->
-      <section class="col-span-1 md:col-span-2 bg-gray-800 p-4 rounded-lg">
-        <div class="flex justify-between items-center mb-3">
-          <div>
-            <div class="text-xs text-gray-400">Estado</div>
-            <div id="stateLabel" class="font-semibold text-lg">WAITING</div>
-          </div>
-          <div class="text-right">
-            <div class="text-xs text-gray-400">Ronda</div>
-            <div id="roundLabel">—</div>
-          </div>
-        </div>
-
-        <!-- Waiting -->
-        <div id="panelWaiting" class="">
-          <p class="text-gray-300">Cuando todos estén listos, el host puede iniciar la partida.</p>
-          <div class="mt-3" id="hostControls">
-            <button onclick="startGame()" class="bg-yellow-500 p-2 rounded">🚀 Iniciar partida</button>
-          </div>
-        </div>
-
-        <!-- Reveal panel -->
-        <div id="panelReveal" class="hidden">
-          <div id="myWordBox" class="hidden p-3 bg-gray-900 rounded mb-3">
-            <div class="text-sm text-gray-400">Palabra privada</div>
-            <div id="myWordText" class="text-2xl font-bold text-yellow-300 mt-1"></div>
-          </div>
-          <div class="flex gap-2">
-            <button onclick="hostNextReveal()" class="bg-blue-600 p-2 rounded" id="btnHostNextReveal">⏭️ Siguiente revelación (Host)</button>
-            <button onclick="startGame()" class="bg-green-600 p-2 rounded" id="btnHostStartSpeaking" style="display:none">▶ Iniciar speaking</button>
-          </div>
-        </div>
-
-        <!-- Speaking panel -->
-        <div id="panelSpeak" class="hidden">
-          <div class="p-3 bg-gray-900 rounded mb-3">
-            <div class="text-sm text-gray-400">Siguiente hablante</div>
-            <div id="speakNext" class="text-xl font-semibold text-purple-200 mt-1">—</div>
-            <div class="text-xs text-gray-500">El host marcará cuando termine cada hablante.</div>
-          </div>
-          <div class="flex gap-2">
-            <button onclick="hostMarkSpoken()" class="bg-indigo-600 p-2 rounded">✅ Marcar hablado (host)</button>
-            <button onclick="update(ref(db, 'games/' + (localStorage.getItem('gameId')||'')), { state: 'voting' })" class="bg-pink-600 p-2 rounded">🗳️ Forzar votación</button>
-          </div>
-        </div>
-
-        <!-- Voting panel -->
-        <div id="panelVoting" class="hidden">
-          <div class="p-2 bg-gray-900 rounded mb-3">
-            <div id="votingButtons" class="flex flex-wrap"></div>
-          </div>
-          <div class="flex gap-2">
-            <div id="hostVotingControls" class="hidden">
-              <button onclick="hostConfirmVotes()" class="bg-red-600 p-2 rounded">🔴 Confirmar votos/Eliminar</button>
+        <div class="grid md:grid-cols-3 gap-6 max-w-4xl mx-auto">
+            <div class="bg-white/10 backdrop-blur-lg rounded-2xl p-6 text-center">
+                <div class="text-4xl mb-3">📱</div>
+                <h3 class="font-bold text-lg mb-2">Multijugador Online</h3>
+                <p class="text-sm text-gray-300">Juega con amigos desde cualquier lugar</p>
             </div>
-          </div>
-          <div class="mt-3 text-sm text-gray-300">Votación sincronizada. Si estás en modo anónimo, pasa el teléfono para votar.</div>
-        </div>
-
-        <!-- mrwhite guess UI -->
-        <div id="panelMrWhite" class="hidden mt-3">
-          <div class="p-3 bg-gray-900 rounded">
-            <div class="text-sm text-gray-400">Mr. White eliminado: puede intentar adivinar la palabra</div>
-            <input id="mrwhiteGuess" placeholder="Escribe tu adivinanza" class="w-full p-2 mt-2 rounded bg-gray-800"/>
-            <div class="flex gap-2 mt-2">
-              <button onclick="mrwhiteGuessSubmit()" class="bg-emerald-600 p-2 rounded">🔎 Enviar adivinanza</button>
+            <div class="bg-white/10 backdrop-blur-lg rounded-2xl p-6 text-center">
+                <div class="text-4xl mb-3">😂</div>
+                <h3 class="font-bold text-lg mb-2">Risas Garantizadas</h3>
+                <p class="text-sm text-gray-300">Ideal para romper el hielo</p>
             </div>
-          </div>
+            <div class="bg-white/10 backdrop-blur-lg rounded-2xl p-6 text-center">
+                <div class="text-4xl mb-3">⚡</div>
+                <h3 class="font-bold text-lg mb-2">Tiempo Real</h3>
+                <p class="text-sm text-gray-300">Sincronización instantánea</p>
+            </div>
         </div>
+    </div>
 
-        <!-- End -->
-        <div id="panelEnded" class="hidden mt-3">
-          <div id="endText" class="p-3 bg-gray-900 rounded text-center"></div>
+    <!-- Pantalla de Reglas -->
+    <div id="rulesScreen" class="hidden container mx-auto px-4 py-8">
+        <div class="max-w-3xl mx-auto">
+            <button onclick="showHome()" class="mb-6 bg-white/20 hover:bg-white/30 px-6 py-3 rounded-xl transition-all">
+                ← Volver
+            </button>
+            
+            <div class="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl">
+                <h2 class="text-4xl font-bold mb-8 text-center">¿Cómo Jugar?</h2>
+                
+                <div class="space-y-6">
+                    <div class="bg-white/10 rounded-xl p-6">
+                        <div class="flex items-start">
+                            <div class="bg-purple-500 rounded-full w-10 h-10 flex items-center justify-center font-bold mr-4 flex-shrink-0">1</div>
+                            <div>
+                                <h3 class="font-bold text-xl mb-2">Configura la Partida</h3>
+                                <p class="text-gray-300">Elige el número de jugadores, Undercover y Mr. White.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white/10 rounded-xl p-6">
+                        <div class="flex items-start">
+                            <div class="bg-purple-500 rounded-full w-10 h-10 flex items-center justify-center font-bold mr-4 flex-shrink-0">2</div>
+                            <div>
+                                <h3 class="font-bold text-xl mb-2">Descubre tu Rol</h3>
+                                <p class="text-gray-300">Cada jugador descubre en secreto su rol y palabra. ¡Mr. White no recibe ninguna palabra!</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white/10 rounded-xl p-6">
+                        <div class="flex items-start">
+                            <div class="bg-purple-500 rounded-full w-10 h-10 flex items-center justify-center font-bold mr-4 flex-shrink-0">3</div>
+                            <div>
+                                <h3 class="font-bold text-xl mb-2">Da una Pista</h3>
+                                <p class="text-gray-300">Cada jugador dice una pista de una sola palabra para demostrar que conoce la palabra secreta.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white/10 rounded-xl p-6">
+                        <div class="flex items-start">
+                            <div class="bg-purple-500 rounded-full w-10 h-10 flex items-center justify-center font-bold mr-4 flex-shrink-0">4</div>
+                            <div>
+                                <h3 class="font-bold text-xl mb-2">Vota para Eliminar</h3>
+                                <p class="text-gray-300">Después de cada ronda, vota para eliminar a quien crees que es un Undercover o Mr. White.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white/10 rounded-xl p-6">
+                        <div class="flex items-start">
+                            <div class="bg-purple-500 rounded-full w-10 h-10 flex items-center justify-center font-bold mr-4 flex-shrink-0">5</div>
+                            <div>
+                                <h3 class="font-bold text-xl mb-2">¿Quién Gana?</h3>
+                                <p class="text-gray-300">Los Civiles ganan si eliminan a todos los demás. ¡Los Undercover y Mr. White ganan si sobreviven!</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
+    </div>
 
-        <div class="mt-4 text-sm text-gray-400">Último eliminado: <span id="lastElim">—</span></div>
-      </section>
-    </main>
-  </div>
+    <!-- Pantalla Crear Sala -->
+    <div id="createRoomScreen" class="hidden container mx-auto px-4 py-8">
+        <div class="max-w-2xl mx-auto">
+            <button onclick="showHome()" class="mb-6 bg-white/20 hover:bg-white/30 px-6 py-3 rounded-xl transition-all">
+                ← Volver
+            </button>
+            
+            <div class="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl">
+                <h2 class="text-4xl font-bold mb-8 text-center">Crear Sala</h2>
+                
+                <div class="space-y-6">
+                    <div>
+                        <label class="block text-lg font-semibold mb-2">Tu Nombre</label>
+                        <input type="text" id="hostName" placeholder="Ingresa tu nombre" 
+                               class="w-full bg-white/20 border-2 border-white/30 rounded-xl px-4 py-3 text-lg focus:outline-none focus:border-purple-400">
+                    </div>
 
-  <script>
-    // expose small helpers used inline (only minimal)
-    window.update = (refObj, data)=> { /* noop placeholder for in-page debug buttons */ };
-  </script>
+                    <div>
+                        <label class="block text-lg font-semibold mb-2">Número de Jugadores</label>
+                        <input type="number" id="maxPlayers" min="4" max="20" value="6" 
+                               class="w-full bg-white/20 border-2 border-white/30 rounded-xl px-4 py-3 text-xl font-bold text-center focus:outline-none focus:border-purple-400"
+                               onchange="updateCreateConfig()">
+                    </div>
+
+                    <div>
+                        <label class="block text-lg font-semibold mb-2">Undercovers</label>
+                        <input type="number" id="createUndercover" min="1" max="3" value="1" 
+                               class="w-full bg-white/20 border-2 border-white/30 rounded-xl px-4 py-3 text-xl font-bold text-center focus:outline-none focus:border-purple-400"
+                               onchange="updateCreateConfig()">
+                    </div>
+
+                    <div>
+                        <label class="block text-lg font-semibold mb-2">Mr. White</label>
+                        <input type="number" id="createMrWhite" min="0" max="2" value="1" 
+                               class="w-full bg-white/20 border-2 border-white/30 rounded-xl px-4 py-3 text-xl font-bold text-center focus:outline-none focus:border-purple-400"
+                               onchange="updateCreateConfig()">
+                    </div>
+
+                    <div class="bg-purple-500/30 rounded-xl p-4">
+                        <p class="text-center">
+                            <span class="font-bold text-2xl" id="createCivilians">4</span> Civiles
+                        </p>
+                    </div>
+
+                    <button onclick="createRoom()" class="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold text-2xl py-6 rounded-2xl transition-all transform hover:scale-105 shadow-lg">
+                        ✨ Crear Sala
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pantalla Unirse a Sala -->
+    <div id="joinRoomScreen" class="hidden container mx-auto px-4 py-8">
+        <div class="max-w-2xl mx-auto">
+            <button onclick="showHome()" class="mb-6 bg-white/20 hover:bg-white/30 px-6 py-3 rounded-xl transition-all">
+                ← Volver
+            </button>
+            
+            <div class="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl">
+                <h2 class="text-4xl font-bold mb-8 text-center">Unirse a Sala</h2>
+                
+                <div class="space-y-6">
+                    <div>
+                        <label class="block text-lg font-semibold mb-2">Tu Nombre</label>
+                        <input type="text" id="playerName" placeholder="Ingresa tu nombre" 
+                               class="w-full bg-white/20 border-2 border-white/30 rounded-xl px-4 py-3 text-lg focus:outline-none focus:border-purple-400">
+                    </div>
+
+                    <div>
+                        <label class="block text-lg font-semibold mb-2">Código de Sala</label>
+                        <input type="text" id="roomCode" placeholder="Ej: ABC123" maxlength="6"
+                               class="w-full bg-white/20 border-2 border-white/30 rounded-xl px-4 py-3 text-2xl font-bold text-center uppercase focus:outline-none focus:border-purple-400">
+                    </div>
+
+                    <button onclick="joinRoom()" class="w-full bg-gradient-to-r from-blue-500 to-cyan-600 hover:from-blue-600 hover:to-cyan-700 text-white font-bold text-2xl py-6 rounded-2xl transition-all transform hover:scale-105 shadow-lg">
+                        🚪 Unirse
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sala de Espera -->
+    <div id="lobbyScreen" class="hidden container mx-auto px-4 py-8">
+        <div class="max-w-3xl mx-auto">
+            <div class="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl">
+                <div class="text-center mb-8">
+                    <h2 class="text-4xl font-bold mb-4">Sala de Espera</h2>
+                    <div class="bg-yellow-500/30 border-2 border-yellow-500 rounded-xl p-6 mb-4">
+                        <p class="text-sm text-gray-300 mb-2">Código de Sala</p>
+                        <p id="displayRoomCode" class="text-5xl font-bold tracking-widest">ABC123</p>
+                        <button onclick="copyRoomCode()" class="mt-3 bg-white/20 hover:bg-white/30 px-4 py-2 rounded-lg text-sm transition-all">
+                            📋 Copiar Código
+                        </button>
+                    </div>
+                    <p class="text-gray-300">Comparte el código con tus amigos</p>
+                </div>
+
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold mb-4 text-center">
+                        Jugadores (<span id="playerCount">1</span>/<span id="maxPlayerCount">6</span>)
+                    </h3>
+                    <div id="playersList" class="space-y-3"></div>
+                </div>
+
+                <div id="hostControls" class="space-y-4">
+                    <button onclick="startGameFromLobby()" class="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold text-xl py-5 rounded-2xl transition-all shadow-lg">
+                        ▶️ Iniciar Juego
+                    </button>
+                </div>
+
+                <button onclick="leaveLobby()" class="w-full mt-4 bg-red-500/30 hover:bg-red-500/50 text-white font-semibold py-3 rounded-xl transition-all">
+                    ❌ Salir de la Sala
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pantalla de Roles -->
+    <div id="roleScreen" class="hidden container mx-auto px-4 py-8">
+        <div class="max-w-2xl mx-auto">
+            <div class="text-center mb-6">
+                <div class="text-6xl mb-4">👤</div>
+                <h2 class="text-3xl font-bold mb-2">Tu Rol Secreto</h2>
+                <p class="text-gray-300">Haz clic para revelar</p>
+            </div>
+
+            <div id="roleHidden" class="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl text-center">
+                <div class="mb-8">
+                    <div class="text-8xl mb-4">🎭</div>
+                    <p class="text-xl text-gray-300">¿Estás listo para descubrir tu rol secreto?</p>
+                </div>
+                <button onclick="revealRole()" class="bg-gradient-to-r from-yellow-500 to-orange-600 hover:from-yellow-600 hover:to-orange-700 text-white font-bold text-2xl px-12 py-6 rounded-2xl transition-all transform hover:scale-105 shadow-lg">
+                    👁️ Revelar
+                </button>
+            </div>
+
+            <div id="roleRevealed" class="hidden bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl">
+                <div class="text-center mb-8">
+                    <div id="roleIcon" class="text-8xl mb-4">👥</div>
+                    <h3 id="roleName" class="text-4xl font-bold mb-2">Civil</h3>
+                    <p id="roleDescription" class="text-gray-300 mb-6">Tu palabra secreta es:</p>
+                    
+                    <div id="wordContainer" class="bg-gradient-to-r from-purple-500 to-pink-500 rounded-2xl p-8 mb-6">
+                        <p id="secretWord" class="text-5xl font-bold">PERRO</p>
+                    </div>
+
+                    <div class="bg-yellow-500/20 border-2 border-yellow-500 rounded-xl p-4 mb-6">
+                        <p class="text-sm">⚠️ ¡No dejes que otros vean tu palabra!</p>
+                    </div>
+                </div>
+
+                <button onclick="acknowledgeRole()" class="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-bold text-xl py-5 rounded-2xl transition-all shadow-lg">
+                    ✓ Entendido
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pantalla de Juego Activo -->
+    <div id="gameScreen" class="hidden container mx-auto px-4 py-8">
+        <div class="max-w-4xl mx-auto">
+            <div class="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl">
+                <div class="text-center mb-8">
+                    <h2 class="text-4xl font-bold mb-4">Ronda de Pistas</h2>
+                    <p class="text-xl text-gray-300">Cada jugador da una pista de una palabra</p>
+                    <div class="mt-4">
+                        <span class="bg-purple-500 px-4 py-2 rounded-full text-lg font-bold">
+                            Ronda <span id="currentRound">1</span>
+                        </span>
+                    </div>
+                </div>
+
+                <div id="activePlayersList" class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8"></div>
+
+                <div id="gameControls" class="space-y-4">
+                    <button onclick="showVoting()" class="w-full bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-600 hover:to-pink-700 text-white font-bold text-xl py-5 rounded-2xl transition-all shadow-lg">
+                        🗳️ Iniciar Votación
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pantalla de Votación -->
+    <div id="votingScreen" class="hidden container mx-auto px-4 py-8">
+        <div class="max-w-3xl mx-auto">
+            <div class="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl">
+                <div class="text-center mb-8">
+                    <div class="text-6xl mb-4">🗳️</div>
+                    <h2 class="text-4xl font-bold mb-2">Votación</h2>
+                    <p class="text-xl text-gray-300">¿Quién crees que es Undercover o Mr. White?</p>
+                    <p id="votingStatus" class="mt-4 text-yellow-400 font-semibold"></p>
+                </div>
+
+                <div id="votingList" class="space-y-3 mb-8"></div>
+
+                <div id="votingResults" class="hidden mt-8 bg-yellow-500/20 border-2 border-yellow-500 rounded-xl p-6">
+                    <h3 class="text-2xl font-bold mb-4 text-center">Resultados</h3>
+                    <div id="votingResultsList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pantalla de Resultados -->
+    <div id="resultsScreen" class="hidden container mx-auto px-4 py-8">
+        <div class="max-w-2xl mx-auto">
+            <div class="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl text-center">
+                <div class="text-8xl mb-6">🎉</div>
+                <h2 id="resultTitle" class="text-5xl font-bold mb-4">¡Victoria!</h2>
+                <p id="resultMessage" class="text-2xl text-gray-300 mb-8">Los Civiles han ganado</p>
+
+                <div id="finalPlayersList" class="mb-8"></div>
+
+                <div class="space-y-4">
+                    <button onclick="showHome()" class="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-bold text-xl py-5 rounded-2xl transition-all shadow-lg">
+                        🏠 Menú Principal
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getDatabase, ref, set, get, update, onValue, push, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics.js";
+
+        // Tu configuración de Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyCob3LEUMLwlCXAiGzheIuGmYQhArpHQ_k",
+            authDomain: "undercover-37256.firebaseapp.com",
+            projectId: "undercover-37256",
+            storageBucket: "undercover-37256.firebasestorage.app",
+            messagingSenderId: "756599146063",
+            appId: "1:756599146063:web:0e9de4a385b2f8c11fcc3a",
+            measurementId: "G-EW0ZL3GNTK"
+        };
+
+        // Inicializar Firebase
+        const app = initializeApp(firebaseConfig);
+        const database = getDatabase(app);
+        const analytics = getAnalytics(app);
+
+        // Exportar para uso global
+        window.firebaseDb = database;
+        window.firebaseRef = ref;
+        window.firebaseSet = set;
+        window.firebaseGet = get;
+        window.firebaseUpdate = update;
+        window.firebaseOnValue = onValue;
+        window.firebasePush = push;
+        window.firebaseRemove = remove;
+        window.firebaseOnDisconnect = onDisconnect;
+
+        console.log("🔥 Firebase inicializado correctamente");
+    </script>
+
+    <script>
+        // Banco de palabras
+        const wordPairs = [
+            { civilian: "PERRO", undercover: "GATO" },
+            { civilian: "CAFÉ", undercover: "TÉ" },
+            { civilian: "PIZZA", undercover: "HAMBURGUESA" },
+            { civilian: "COCHE", undercover: "MOTO" },
+            { civilian: "PLAYA", undercover: "PISCINA" },
+            { civilian: "SOL", undercover: "LUNA" },
+            { civilian: "VERANO", undercover: "INVIERNO" },
+            { civilian: "DOCTOR", undercover: "ENFERMERO" },
+            { civilian: "AVIÓN", undercover: "HELICÓPTERO" },
+            { civilian: "LIBRO", undercover: "REVISTA" },
+            { civilian: "MANZANA", undercover: "PERA" },
+            { civilian: "FÚTBOL", undercover: "BALONCESTO" },
+            { civilian: "GUITARRA", undercover: "PIANO" },
+            { civilian: "MONTAÑA", undercover: "COLINA" },
+            { civilian: "RÍO", undercover: "LAGO" },
+            { civilian: "PELÍCULA", undercover: "SERIE" },
+            { civilian: "GOOGLE", undercover: "BING" },
+            { civilian: "ZAPATO", undercover: "ZAPATILLA" },
+            { civilian: "HOTEL", undercover: "MOTEL" },
+            { civilian: "AGUA", undercover: "JUGO" },
+            { civilian: "PAN", undercover: "TORTILLA" },
+            { civilian: "DENTISTA", undercover: "ORTODONCISTA" },
+            { civilian: "TREN", undercover: "METRO" },
+            { civilian: "ESPEJO", undercover: "VENTANA" }
+        ];
+
+        // Estado del juego
+        let gameState = {
+            roomCode: null,
+            playerId: null,
+            playerName: null,
+            isHost: false,
+            myRole: null,
+            myWord: null,
+            roomListener: null
+        };
+
+        // Generar código de sala único
+        function generateRoomCode() {
+            return Math.random().toString(36).substring(2, 8).toUpperCase();
+        }
+
+        // Generar ID de jugador único
+        function generatePlayerId() {
+            return 'player_' + Math.random().toString(36).substring(2, 15);
+        }
+
+        // Funciones de navegación
+        function showHome() {
+            hideAllScreens();
+            if (gameState.roomListener) {
+                gameState.roomListener();
+                gameState.roomListener = null;
+            }
+            document.getElementById('homeScreen').classList.remove('hidden');
+        }
+
+        function showRules() {
+            hideAllScreens();
+            document.getElementById('rulesScreen').classList.remove('hidden');
+            document.getElementById('rulesScreen').classList.add('fade-in');
+        }
+
+        function showCreateRoom() {
+            hideAllScreens();
+            document.getElementById('createRoomScreen').classList.remove('hidden');
+            document.getElementById('createRoomScreen').classList.add('fade-in');
+            updateCreateConfig();
+        }
+
+        function showJoinRoom() {
+            hideAllScreens();
+            document.getElementById('joinRoomScreen').classList.remove('hidden');
+            document.getElementById('joinRoomScreen').classList.add('fade-in');
+        }
+
+        function hideAllScreens() {
+            const screens = ['homeScreen', 'rulesScreen', 'createRoomScreen', 'joinRoomScreen', 
+                           'lobbyScreen', 'roleScreen', 'gameScreen', 'votingScreen', 'resultsScreen'];
+            screens.forEach(screen => {
+                document.getElementById(screen).classList.add('hidden');
+            });
+        }
+
+        // Actualizar configuración de creación
+        function updateCreateConfig() {
+            const maxPlayers = parseInt(document.getElementById('maxPlayers').value);
+            const numUndercover = parseInt(document.getElementById('createUndercover').value);
+            const numMrWhite = parseInt(document.getElementById('createMrWhite').value);
+            
+            const numCivilians = maxPlayers - numUndercover - numMrWhite;
+            document.getElementById('createCivilians').textContent = numCivilians;
+        }
+
+        // Crear sala
+        async function createRoom() {
+            const hostName = document.getElementById('hostName').value.trim();
+            if (!hostName) {
+                alert('Por favor ingresa tu nombre');
+                return;
+            }
+
+            const maxPlayers = parseInt(document.getElementById('maxPlayers').value);
+            const numUndercover = parseInt(document.getElementById('createUndercover').value);
+            const numMrWhite = parseInt(document.getElementById('createMrWhite').value);
+            const numCivilians = maxPlayers - numUndercover - numMrWhite;
+
+            if (numCivilians < 2) {
+                alert('Debe haber al menos 2 civiles');
+                return;
+            }
+
+            const roomCode = generateRoomCode();
+            const playerId = generatePlayerId();
+            const wordPair = wordPairs[Math.floor(Math.random() * wordPairs.length)];
+
+            const roomData = {
+                roomCode: roomCode,
+                hostId: playerId,
+                maxPlayers: maxPlayers,
+                numUndercover: numUndercover,
+                numMrWhite: numMrWhite,
+                status: 'lobby',
+                words: wordPair,
+                createdAt: Date.now(),
+                players: {
+                    [playerId]: {
+                        id: playerId,
+                        name: hostName,
+                        isHost: true,
+                        ready: false,
+                        eliminated: false,
+                        role: null
+                    }
+                }
+            };
+
+            try {
+                await window.firebaseSet(window.firebaseRef(window.firebaseDb, `rooms/${roomCode}`), roomData);
+                
+                gameState.roomCode = roomCode;
+                gameState.playerId = playerId;
+                gameState.playerName = hostName;
+                gameState.isHost = true;
+
+                // Configurar desconexión
+                const playerRef = window.firebaseRef(window.firebaseDb, `rooms/${roomCode}/players/${playerId}`);
+                window.firebaseOnDisconnect(playerRef).remove();
+
+                showLobby();
+            } catch (error) {
+                console.error('Error al crear sala:', error);
+                alert('Error al crear la sala. Intenta de nuevo.');
+            }
+        }
+
+        // Unirse a sala
+        async function joinRoom() {
+            const playerName = document.getElementById('playerName').value.trim();
+            const roomCode = document.getElementById('roomCode').value.trim().toUpperCase();
+
+            if (!playerName) {
+                alert('Por favor ingresa tu nombre');
+                return;
+            }
+
+            if (!roomCode || roomCode.length !== 6) {
+                alert('Por favor ingresa un código de sala válido');
+                return;
+            }
+
+            try {
+                const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${roomCode}`);
+                const snapshot = await window.firebaseGet(roomRef);
+
+                if (!snapshot.exists()) {
+                    alert('La sala no existe');
+                    return;
+                }
+
+                const roomData = snapshot.val();
+                const playerCount = Object.keys(roomData.players || {}).length;
+
+                if (playerCount >= roomData.maxPlayers) {
+                    alert('La sala está llena');
+                    return;
+                }
+
+                if (roomData.status !== 'lobby') {
+                    alert('El juego ya comenzó');
+                    return;
+                }
+
+                const playerId = generatePlayerId();
+                const playerData = {
+                    id: playerId,
+                    name: playerName,
+                    isHost: false,
+                    ready: false,
+                    eliminated: false,
+                    role: null
+                };
+
+                await window.firebaseUpdate(window.firebaseRef(window.firebaseDb, `rooms/${roomCode}/players/${playerId}`), playerData);
+
+                gameState.roomCode = roomCode;
+                gameState.playerId = playerId;
+                gameState.playerName = playerName;
+                gameState.isHost = false;
+
+                // Configurar desconexión
+                const playerRef = window.firebaseRef(window.firebaseDb, `rooms/${roomCode}/players/${playerId}`);
+                window.firebaseOnDisconnect(playerRef).remove();
+
+                showLobby();
+            } catch (error) {
+                console.error('Error al unirse:', error);
+                alert('Error al unirse a la sala. Intenta de nuevo.');
+            }
+        }
+
+        // Mostrar lobby
+        function showLobby() {
+            hideAllScreens();
+            document.getElementById('lobbyScreen').classList.remove('hidden');
+            document.getElementById('displayRoomCode').textContent = gameState.roomCode;
+
+            if (gameState.isHost) {
+                document.getElementById('hostControls').classList.remove('hidden');
+            } else {
+                document.getElementById('hostControls').classList.add('hidden');
+            }
+
+            // Escuchar cambios en la sala
+            const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
+            gameState.roomListener = window.firebaseOnValue(roomRef, (snapshot) => {
+                if (!snapshot.exists()) {
+                    alert('La sala ha sido cerrada');
+                    showHome();
+                    return;
+                }
+
+                const roomData = snapshot.val();
+                updateLobbyPlayers(roomData);
+
+                // Si el juego comenzó, ir a pantalla de roles
+                if (roomData.status === 'roles') {
+                    showRoleScreen(roomData);
+                } else if (roomData.status === 'playing') {
+                    showGameScreen(roomData);
+                } else if (roomData.status === 'voting') {
+                    showVotingScreen(roomData);
+                } else if (roomData.status === 'finished') {
+                    showResultsScreen(roomData);
+                }
+            });
+        }
+
+        // Actualizar lista de jugadores en lobby
+        function updateLobbyPlayers(roomData) {
+            const playersList = document.getElementById('playersList');
+            const players = Object.values(roomData.players || {});
+            
+            document.getElementById('playerCount').textContent = players.length;
+            document.getElementById('maxPlayerCount').textContent = roomData.maxPlayers;
+
+            playersList.innerHTML = '';
+            players.forEach(player => {
+                const playerDiv = document.createElement('div');
+                playerDiv.className = 'bg-white/20 rounded-xl p-4 flex items-center justify-between';
+                playerDiv.innerHTML = `
+                    <div class="flex items-center">
+                        <div class="text-2xl mr-3">${player.isHost ? '👑' : '👤'}</div>
+                        <span class="font-semibold">${player.name}</span>
+                    </div>
+                    ${player.ready ? '<span class="text-green-400">✓</span>' : ''}
+                `;
+                playersList.appendChild(playerDiv);
+            });
+        }
+
+        // Copiar código de sala
+        function copyRoomCode() {
+            navigator.clipboard.writeText(gameState.roomCode);
+            alert('¡Código copiado!');
+        }
+
+        // Salir del lobby
+        async function leaveLobby() {
+            if (confirm('¿Seguro que quieres salir?')) {
+                try {
+                    await window.firebaseRemove(window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/players/${gameState.playerId}`));
+                    
+                    // Si es el host, eliminar la sala
+                    if (gameState.isHost) {
+                        await window.firebaseRemove(window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`));
+                    }
+                    
+                    showHome();
+                } catch (error) {
+                    console.error('Error al salir:', error);
+                }
+            }
+        }
+
+        // Iniciar juego desde lobby
+        async function startGameFromLobby() {
+            try {
+                const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
+                const snapshot = await window.firebaseGet(roomRef);
+                const roomData = snapshot.val();
+                
+                const players = Object.values(roomData.players || {});
+                
+                if (players.length < 4) {
+                    alert('Se necesitan al menos 4 jugadores');
+                    return;
+                }
+
+                // Asignar roles
+                const roles = [];
+                const numCivilians = players.length - roomData.numUndercover - roomData.numMrWhite;
+                
+                for (let i = 0; i < numCivilians; i++) roles.push('civilian');
+                for (let i = 0; i < roomData.numUndercover; i++) roles.push('undercover');
+                for (let i = 0; i < roomData.numMrWhite; i++) roles.push('mrwhite');
+                
+                // Barajar roles
+                roles.sort(() => Math.random() - 0.5);
+
+                // Asignar roles a jugadores
+                const updates = {};
+                players.forEach((player, index) => {
+                    updates[`players/${player.id}/role`] = roles[index];
+                    updates[`players/${player.id}/acknowledged`] = false;
+                });
+                
+                updates['status'] = 'roles';
+                updates['round'] = 1;
+                updates['currentPhase'] = 'reveal';
+
+                await window.firebaseUpdate(window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`), updates);
+            } catch (error) {
+                console.error('Error al iniciar juego:', error);
+                alert('Error al iniciar el juego');
+            }
+        }
+
+        // Mostrar pantalla de roles
+        function showRoleScreen(roomData) {
+            hideAllScreens();
+            document.getElementById('roleScreen').classList.remove('hidden');
+            document.getElementById('roleHidden').classList.remove('hidden');
+            document.getElementById('roleRevealed').classList.add('hidden');
+
+            const myPlayer = roomData.players[gameState.playerId];
+            gameState.myRole = myPlayer.role;
+        }
+
+        // Revelar rol
+        function revealRole() {
+            const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
+            window.firebaseGet(roomRef).then(snapshot => {
+                const roomData = snapshot.val();
+                const role = gameState.myRole;
+                const words = roomData.words;
+
+                const roleIcons = {
+                    civilian: '👥',
+                    undercover: '🕵️',
+                    mrwhite: '⚪'
+                };
+                const roleNames = {
+                    civilian: 'Civil',
+                    undercover: 'Undercover',
+                    mrwhite: 'Mr. White'
+                };
+                const roleDescriptions = {
+                    civilian: 'Tu palabra secreta es:',
+                    undercover: 'Tu palabra secreta es:',
+                    mrwhite: '¡No tienes palabra! Debes adivinar la palabra de los civiles.'
+                };
+
+                document.getElementById('roleIcon').textContent = roleIcons[role];
+                document.getElementById('roleName').textContent = roleNames[role];
+                document.getElementById('roleDescription').textContent = roleDescriptions[role];
+
+                if (role === 'civilian') {
+                    document.getElementById('wordContainer').classList.remove('hidden');
+                    document.getElementById('secretWord').textContent = words.civilian;
+                    gameState.myWord = words.civilian;
+                } else if (role === 'undercover') {
+                    document.getElementById('wordContainer').classList.remove('hidden');
+                    document.getElementById('secretWord').textContent = words.undercover;
+                    gameState.myWord = words.undercover;
+                } else {
+                    document.getElementById('wordContainer').classList.add('hidden');
+                    gameState.myWord = null;
+                }
+
+                document.getElementById('roleHidden').classList.add('hidden');
+                document.getElementById('roleRevealed').classList.remove('hidden');
+            });
+        }
+
+        // Confirmar que vio el rol
+        async function acknowledgeRole() {
+            try {
+                await window.firebaseUpdate(
+                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/players/${gameState.playerId}`),
+                    { acknowledged: true }
+                );
+
+                // Esperar a que todos confirmen
+                document.getElementById('roleRevealed').innerHTML = `
+                    <div class="text-center">
+                        <div class="text-6xl mb-4 pulse-animation">⏳</div>
+                        <p class="text-2xl font-bold">Esperando a otros jugadores...</p>
+                    </div>
+                `;
+
+                // Verificar si todos están listos
+                const roomRef = window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`);
+                const snapshot = await window.firebaseGet(roomRef);
+                const roomData = snapshot.val();
+                const players = Object.values(roomData.players || {});
+                const allAcknowledged = players.every(p => p.acknowledged);
+
+                if (allAcknowledged && gameState.isHost) {
+                    await window.firebaseUpdate(
+                        window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                        { status: 'playing' }
+                    );
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        // Mostrar pantalla de juego
+        function showGameScreen(roomData) {
+            hideAllScreens();
+            document.getElementById('gameScreen').classList.remove('hidden');
+            
+            const players = Object.values(roomData.players || {}).filter(p => !p.eliminated);
+            const activePlayersList = document.getElementById('activePlayersList');
+            activePlayersList.innerHTML = '';
+
+            players.forEach(player => {
+                const playerDiv = document.createElement('div');
+                playerDiv.className = 'bg-white/20 rounded-xl p-4 text-center';
+                playerDiv.innerHTML = `
+                    <div class="text-3xl mb-2">${player.isHost ? '👑' : '👤'}</div>
+                    <p class="font-bold">${player.name}</p>
+                `;
+                activePlayersList.appendChild(playerDiv);
+            });
+
+            document.getElementById('currentRound').textContent = roomData.round || 1;
+
+            // Solo el host puede iniciar votación
+            if (gameState.isHost) {
+                document.getElementById('gameControls').classList.remove('hidden');
+            } else {
+                document.getElementById('gameControls').classList.add('hidden');
+            }
+        }
+
+        // Mostrar votación
+        async function showVoting() {
+            if (!gameState.isHost) return;
+
+            try {
+                await window.firebaseUpdate(
+                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                    { 
+                        status: 'voting',
+                        votes: {}
+                    }
+                );
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        // Mostrar pantalla de votación
+        function showVotingScreen(roomData) {
+            hideAllScreens();
+            document.getElementById('votingScreen').classList.remove('hidden');
+
+            const players = Object.values(roomData.players || {}).filter(p => !p.eliminated);
+            const votingList = document.getElementById('votingList');
+            votingList.innerHTML = '';
+
+            const myVote = roomData.votes && roomData.votes[gameState.playerId];
+            const hasVoted = !!myVote;
+
+            players.forEach(player => {
+                const voteButton = document.createElement('button');
+                const voteCount = Object.values(roomData.votes || {}).filter(v => v === player.id).length;
+                
+                voteButton.className = `w-full bg-white/20 hover:bg-white/30 text-white font-semibold py-4 px-6 rounded-xl transition-all text-left flex items-center justify-between ${myVote === player.id ? 'ring-4 ring-yellow-400' : ''}`;
+                voteButton.innerHTML = `
+                    <span class="text-xl">${player.isHost ? '👑' : '👤'} ${player.name}</span>
+                    <span class="bg-red-500 px-3 py-1 rounded-full text-sm font-bold">${voteCount} ${voteCount === 1 ? 'voto' : 'votos'}</span>
+                `;
+                
+                if (!hasVoted) {
+                    voteButton.onclick = () => castVote(player.id);
+                } else {
+                    voteButton.disabled = true;
+                    voteButton.classList.add('opacity-75');
+                }
+
+                votingList.appendChild(voteButton);
+            });
+
+            // Actualizar estado de votación
+            const totalPlayers = players.length;
+            const totalVotes = Object.keys(roomData.votes || {}).length;
+            document.getElementById('votingStatus').textContent = `Votos: ${totalVotes}/${totalPlayers}`;
+
+            // Si todos votaron y soy host, procesar resultados
+            if (totalVotes === totalPlayers && gameState.isHost) {
+                setTimeout(() => processVotingResults(roomData), 2000);
+            }
+        }
+
+        // Emitir voto
+        async function castVote(targetPlayerId) {
+            try {
+                await window.firebaseUpdate(
+                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/votes/${gameState.playerId}`),
+                    targetPlayerId
+                );
+            } catch (error) {
+                console.error('Error al votar:', error);
+            }
+        }
+
+        // Procesar resultados de votación
+        async function processVotingResults(roomData) {
+            const votes = roomData.votes || {};
+            const voteCount = {};
+
+            // Contar votos
+            Object.values(votes).forEach(votedId => {
+                voteCount[votedId] = (voteCount[votedId] || 0) + 1;
+            });
+
+            // Encontrar al más votado
+            let maxVotes = 0;
+            let eliminatedPlayerId = null;
+
+            Object.entries(voteCount).forEach(([playerId, count]) => {
+                if (count > maxVotes) {
+                    maxVotes = count;
+                    eliminatedPlayerId = playerId;
+                }
+            });
+
+            if (!eliminatedPlayerId) {
+                // Nadie fue eliminado, continuar juego
+                await window.firebaseUpdate(
+                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                    { 
+                        status: 'playing',
+                        round: (roomData.round || 1) + 1
+                    }
+                );
+                return;
+            }
+
+            // Eliminar jugador
+            await window.firebaseUpdate(
+                window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}/players/${eliminatedPlayerId}`),
+                { eliminated: true }
+            );
+
+            // Verificar condiciones de victoria
+            const players = Object.values(roomData.players || {});
+            const activePlayers = players.filter(p => !p.eliminated && p.id !== eliminatedPlayerId);
+            const activeUndercover = activePlayers.filter(p => p.role === 'undercover').length;
+            const activeMrWhite = activePlayers.filter(p => p.role === 'mrwhite').length;
+            const activeCivilian = activePlayers.filter(p => p.role === 'civilian').length;
+
+            const eliminatedPlayer = players.find(p => p.id === eliminatedPlayerId);
+            
+            let gameEnded = false;
+            let winner = null;
+
+            // Si Mr. White fue eliminado, puede adivinar
+            if (eliminatedPlayer.role === 'mrwhite') {
+                // En un juego real, aquí habría un prompt, pero lo simplificamos
+                if (activeUndercover === 0) {
+                    gameEnded = true;
+                    winner = 'civilian';
+                }
+            } else if (activeUndercover === 0 && activeMrWhite === 0) {
+                // Todos los infiltrados eliminados
+                gameEnded = true;
+                winner = 'civilian';
+            } else if (activeCivilian <= activeUndercover + activeMrWhite) {
+                // Los infiltrados superan o igualan a los civiles
+                gameEnded = true;
+                winner = 'undercover';
+            }
+
+            if (gameEnded) {
+                await window.firebaseUpdate(
+                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                    { 
+                        status: 'finished',
+                        winner: winner
+                    }
+                );
+            } else {
+                await window.firebaseUpdate(
+                    window.firebaseRef(window.firebaseDb, `rooms/${gameState.roomCode}`),
+                    { 
+                        status: 'playing',
+                        round: (roomData.round || 1) + 1
+                    }
+                );
+            }
+        }
+
+        // Mostrar resultados finales
+        function showResultsScreen(roomData) {
+            hideAllScreens();
+            document.getElementById('resultsScreen').classList.remove('hidden');
+
+            if (roomData.winner === 'civilian') {
+                document.getElementById('resultTitle').textContent = '👥 ¡Civiles Ganan!';
+                document.getElementById('resultMessage').textContent = 'Todos los infiltrados fueron eliminados';
+            } else {
+                document.getElementById('resultTitle').textContent = '🕵️ ¡Infiltrados Ganan!';
+                document.getElementById('resultMessage').textContent = 'Los infiltrados dominaron el juego';
+            }
+
+            // Mostrar roles de todos
+            const finalPlayersList = document.getElementById('finalPlayersList');
+            finalPlayersList.innerHTML = '<h3 class="text-2xl font-bold mb-4">Roles Revelados</h3>';
+            
+            const players = Object.values(roomData.players || {});
+            players.forEach(player => {
+                const roleIcons = {
+                    civilian: '👥',
+                    undercover: '🕵️',
+                    mrwhite: '⚪'
+                };
+                const roleNames = {
+                    civilian: 'Civil',
+                    undercover: 'Undercover',
+                    mrwhite: 'Mr. White'
+                };
+
+                const playerDiv = document.createElement('div');
+                playerDiv.className = 'bg-white/20 rounded-xl p-4 mb-2 flex items-center justify-between';
+                playerDiv.innerHTML = `
+                    <div class="flex items-center">
+                        <span class="text-2xl mr-3">${roleIcons[player.role]}</span>
+                        <span class="font-semibold">${player.name}</span>
+                    </div>
+                    <span class="text-sm opacity-75">${roleNames[player.role]}</span>
+                `;
+                finalPlayersList.appendChild(playerDiv);
+            });
+        }
+
+        // Exponer funciones globales
+        window.showHome = showHome;
+        window.showRules = showRules;
+        window.showCreateRoom = showCreateRoom;
+        window.showJoinRoom = showJoinRoom;
+        window.updateCreateConfig = updateCreateConfig;
+        window.createRoom = createRoom;
+        window.joinRoom = joinRoom;
+        window.copyRoomCode = copyRoomCode;
+        window.leaveLobby = leaveLobby;
+        window.startGameFromLobby = startGameFromLobby;
+        window.revealRole = revealRole;
+        window.acknowledgeRole = acknowledgeRole;
+        window.showVoting = showVoting;
+        window.castVote = castVote;
+    </script>
 </body>
 </html>
