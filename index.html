@@ -32,8 +32,20 @@
       const descInput = document.getElementById("descInput");
       const descList = document.getElementById("descList");
       const startBtn = document.getElementById("startGame");
+      const secretWordArea = document.getElementById("secretWordArea");
+      const secretWordDisplay = document.getElementById("secretWordDisplay");
 
-      const words = ["Perro", "Gato", "Computador", "Chocolate", "Café", "Sol", "Playa", "Escuela", "Montaña", "Avión"];
+      const wordPairs = [
+        ["Perro", "Gato"],
+        ["Computador", "Laptop"],
+        ["Chocolate", "Cacao"],
+        ["Café", "Té"],
+        ["Sol", "Luna"],
+        ["Playa", "Piscina"],
+        ["Escuela", "Universidad"],
+        ["Montaña", "Colina"],
+        ["Avión", "Helicóptero"]
+      ];
 
       // Crear sala
       async function createGame() {
@@ -43,7 +55,8 @@
         await set(newGameRef, {
           players: {},
           state: "waiting",
-          descriptions: {}
+          descriptions: {},
+          round: 0
         });
         alert(`🎮 Sala creada: ${gameId}`);
         listenGame();
@@ -72,7 +85,8 @@
         await set(ref(db, `games/${gameId}/players/${name}`), {
           name,
           alive: true,
-          role: "unknown"
+          role: "unknown",
+          word: ""
         });
         playerNameInput.value = "";
       }
@@ -94,7 +108,7 @@
         });
       }
 
-      // Mostrar lista de jugadores
+      // Mostrar jugadores
       function renderPlayers(players) {
         const list = Object.values(players);
         playerList.innerHTML = list.map(p =>
@@ -108,35 +122,59 @@
           .join("");
       }
 
-      // Cambia lo visible según la fase
+      // Manejar fase del juego
       function handleState(state, players) {
         if (state === "waiting") {
           gameArea.classList.add("hidden");
           startBtn.classList.remove("hidden");
-        } else if (state === "in_progress") {
-          gameArea.classList.remove("hidden");
+        } else if (state === "show_words") {
           startBtn.classList.add("hidden");
+          secretWordArea.classList.remove("hidden");
+          gameArea.classList.add("hidden");
+        } else if (state === "in_progress") {
+          secretWordArea.classList.add("hidden");
+          gameArea.classList.remove("hidden");
         }
       }
 
-      // Iniciar partida (solo host)
+      // Iniciar partida
       async function startGame() {
         const snap = await get(ref(db, `games/${gameId}/players`));
         const players = Object.keys(snap.val() || {});
-        if (players.length < 3) return alert("Se necesitan al menos 3 jugadores");
+        if (players.length < 3) return alert("⚠️ Se necesitan al menos 3 jugadores");
 
-        const word = words[Math.floor(Math.random() * words.length)];
+        const [word1, word2] = wordPairs[Math.floor(Math.random() * wordPairs.length)];
         const mrWhite = players[Math.floor(Math.random() * players.length)];
+        const undercover = players.filter(p => p !== mrWhite)[Math.floor(Math.random() * (players.length - 1))];
 
-        // Asignar roles
         for (const name of players) {
-          await update(ref(db, `games/${gameId}/players/${name}`), {
-            role: name === mrWhite ? "mrwhite" : "undercover",
-            word: name === mrWhite ? "???" : word
-          });
+          let role = "citizen";
+          let word = word1;
+          if (name === mrWhite) {
+            role = "mrwhite";
+            word = "???";
+          } else if (name === undercover) {
+            role = "undercover";
+            word = word2;
+          }
+
+          await update(ref(db, `games/${gameId}/players/${name}`), { role, word });
         }
 
-        await update(ref(db, `games/${gameId}`), { state: "in_progress" });
+        await update(ref(db, `games/${gameId}`), { state: "show_words" });
+      }
+
+      // Ver palabra secreta
+      async function showSecretWord() {
+        const snap = await get(ref(db, `games/${gameId}/players/${playerName}`));
+        if (!snap.exists()) return;
+        const data = snap.val();
+        secretWordDisplay.innerHTML = `<p class='text-2xl mt-3'>🕵️ Tu palabra es: <b>${data.word}</b></p>`;
+
+        // Después de 5 segundos cambia a fase de descripción
+        setTimeout(async () => {
+          await update(ref(db, `games/${gameId}`), { state: "in_progress" });
+        }, 5000);
       }
 
       // Enviar descripción
@@ -151,6 +189,7 @@
       window.joinGame = joinGame;
       window.addPlayer = addPlayer;
       window.startGame = startGame;
+      window.showSecretWord = showSecretWord;
       window.sendDescription = sendDescription;
 
       if (gameId) listenGame();
@@ -186,6 +225,14 @@
 
         <button id="startGame" onclick="startGame()" class="hidden w-full bg-yellow-600 p-3 rounded-lg font-bold mt-4">🚀 Iniciar partida</button>
 
+        <!-- Palabra secreta -->
+        <div id="secretWordArea" class="hidden mt-6 space-y-3">
+          <h2 class="text-lg font-bold text-purple-300">👁 Ver palabra secreta</h2>
+          <button onclick="showSecretWord()" class="w-full bg-purple-600 p-3 rounded-lg font-semibold">👁 Mostrar palabra</button>
+          <div id="secretWordDisplay" class="text-xl text-purple-200"></div>
+        </div>
+
+        <!-- Descripciones -->
         <div id="gameArea" class="hidden mt-6 space-y-4">
           <h2 class="text-lg font-bold text-purple-300">🗣️ Ronda de Descripciones</h2>
           <ul id="descList" class="text-left text-purple-200 space-y-1"></ul>
