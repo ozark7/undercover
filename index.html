@@ -1,186 +1,538 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>🎭 Undercover</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>🎭 Undercover - Multiplayer (Firebase)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
 
-    <script type="module">
-      import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-      import {
-        getDatabase,
-        ref,
-        set,
-        get,
-        push,
-        update,
-        onValue,
-      } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
+  <script type="module">
+    // ---------- FIREBASE (modular) ----------
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+    import {
+      getDatabase, ref, set, push, update, onValue, get
+    } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
 
-      const firebaseConfig = {
-        apiKey: "AIzaSyCob3LEUMLwlCXAiGzheIuGmYQhArpHQ_k",
-        authDomain: "undercover-37256.firebaseapp.com",
-        projectId: "undercover-37256",
-        storageBucket: "undercover-37256.firebasestorage.app",
-        messagingSenderId: "756599146063",
-        appId: "1:756599146063:web:0e9de4a385b2f8c11fcc3a",
-        measurementId: "G-EW0ZL3GNTK",
-        databaseURL: "https://undercover-37256-default-rtdb.firebaseio.com",
+    // ---------- CONFIG (usa la tuya si quieres) ----------
+    const firebaseConfig = {
+      apiKey: "AIzaSyCob3LEUMLwlCXAiGzheIuGmYQhArpHQ_k",
+      authDomain: "undercover-37256.firebaseapp.com",
+      projectId: "undercover-37256",
+      storageBucket: "undercover-37256.firebasestorage.app",
+      messagingSenderId: "756599146063",
+      appId: "1:756599146063:web:0e9de4a385b2f8c11fcc3a",
+      databaseURL: "https://undercover-37256-default-rtdb.firebaseio.com"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // ---------- palabras por paquete (ejemplos) ----------
+    const PACKS = {
+      "Animales": [["Perro","Lobo"],["Gato","Conejo"],["Pez","Ballena"]],
+      "Comida": [["Pizza","Empanada"],["Café","Té"],["Chocolate","Cacao"]],
+      "Objetos": [["Llave","Candado"],["Mesa","Silla"]]
+    };
+
+    // ---------- estado local ----------
+    let gameId = localStorage.getItem("gameId") || null;
+    let playerName = localStorage.getItem("playerName") || "";
+    let isHost = false;
+
+    // ---------- helpers DOM ----------
+    const $ = id => document.getElementById(id);
+
+    // ---------- UI inicial: crear / opciones ----------
+    function readOptionsFromUI(){
+      return {
+        pack: $('packSelect').value,
+        customWord: $('customWord').value.trim(),
+        anonymousVoting: $('anonVote').checked,
+        mrwhiteRestrictions: $('mrwhiteRestrict').value // "any","noFirst","noTwoFirst"
       };
+    }
 
-      const app = initializeApp(firebaseConfig);
-      const db = getDatabase(app);
+    // ---------- Crear sala ----------
+    async function createRoom(){
+      const newRef = push(ref(db,'games'));
+      gameId = newRef.key;
+      isHost = true;
+      localStorage.setItem("gameId", gameId);
 
-      let gameId = localStorage.getItem("gameId") || null;
-      let playerName = localStorage.getItem("playerName") || "";
+      const opts = readOptionsFromUI();
+      await set(newRef, {
+        host: null,
+        players: {},
+        state: 'waiting',
+        options: opts,
+        revealOrder: [],
+        revealIndex: 0,
+        speakOrder: [],
+        spoken: {},
+        votes: {},
+        lastEliminated: null,
+        round: 0
+      });
+      $('roomId').textContent = gameId;
+      listenGame();
+      renderUI();
+      alert('Sala creada: ' + gameId);
+    }
 
-      const playerInput = document.getElementById("username");
-      const createBtn = document.getElementById("createRoom");
-      const joinBtn = document.getElementById("joinRoom");
-      const enterBtn = document.getElementById("enterGame");
-      const playersList = document.getElementById("playersList");
-      const statusText = document.getElementById("statusText");
+    // ---------- Unirse ----------
+    async function joinRoom(){
+      const id = prompt("ID de sala:");
+      if(!id) return;
+      const snap = await get(ref(db, `games/${id}`));
+      if(!snap.exists()) return alert('Sala no encontrada');
+      gameId = id;
+      isHost = false;
+      localStorage.setItem("gameId", gameId);
+      $('roomId').textContent = gameId;
+      listenGame();
+      renderUI();
+    }
 
-      // 🔹 Crear sala
-      async function createGame() {
-        const newGameRef = push(ref(db, "games"));
-        gameId = newGameRef.key;
-        localStorage.setItem("gameId", gameId);
-        await set(newGameRef, {
-          state: "waiting",
-          players: {},
-          host: null,
-        });
-        alert(`🎮 Sala creada con ID: ${gameId}`);
-        statusText.textContent = `Sala creada (#${gameId})`;
-        listenGame();
+    // ---------- Añadir jugador ----------
+    async function addPlayer(){
+      const name = $('username').value.trim();
+      if(!name) return alert('Escribe tu nombre');
+      if(!gameId) return alert('Crea o únete a una sala antes');
+      playerName = name;
+      localStorage.setItem('playerName', playerName);
+
+      // add player node
+      await update(ref(db, `games/${gameId}/players/${name}`), {
+        name, alive: true, role: "unknown", word: ""
+      });
+
+      // set host if none
+      const hostSnap = await get(ref(db, `games/${gameId}/host`));
+      if(!hostSnap.exists()) {
+        await set(ref(db, `games/${gameId}/host`), name);
+        alert('Eres host de la sala');
+        isHost = true;
+      }
+      $('username').value = '';
+    }
+
+    // ---------- Escuchar sala en tiempo real ----------
+    function listenGame(){
+      if(!gameId) return;
+      const gameRef = ref(db, `games/${gameId}`);
+      onValue(gameRef, snap=>{
+        const game = snap.val();
+        if(!game) return;
+        // render players list
+        const players = game.players || {};
+        $('playersList').innerHTML = Object.values(players).map(p=>`<li class="py-1">${p.name} ${!p.alive?'💀':''}</li>`).join('') || '<li class="text-gray-400">Sin jugadores</li>';
+        // show state and UI updates
+        renderGameState(game);
+      });
+    }
+
+    // ---------- START PARTIDA (host) ----------
+    async function startGame(){
+      if(!isHost) return alert('Solo el host puede iniciar');
+      const playersSnap = await get(ref(db, `games/${gameId}/players`));
+      const players = Object.keys(playersSnap.val() || {});
+      if(players.length < 3) return alert('Se necesitan al menos 3 jugadores');
+
+      // read options
+      const optsSnap = await get(ref(db, `games/${gameId}/options`));
+      const opts = optsSnap.val() || {};
+      // choose word pair
+      let pair;
+      if(opts.customWord) {
+        // if custom provided, pair second can be generated fuzzily — for simplicity, pick a fallback
+        pair = [opts.customWord, opts.customWord + " (parecido)"];
+      } else {
+        const pack = PACKS[opts.pack] || PACKS['Animales'];
+        pair = pack[Math.floor(Math.random()*pack.length)];
       }
 
-      // 🔹 Unirse a sala existente
-      async function joinGame() {
-        const id = prompt("🔑 ID de la sala:");
-        if (!id) return;
-        const snap = await get(ref(db, "games/" + id));
-        if (!snap.exists()) return alert("❌ No existe esa sala");
-        gameId = id;
-        localStorage.setItem("gameId", gameId);
-        statusText.textContent = `Unido a la sala (#${gameId})`;
-        listenGame();
+      // determine allowed mrwhite positions
+      // build shuffled and then choose mrwhite ensuring restriction
+      const shuffled = [...players].sort(()=>Math.random()-0.5);
+      let mrwhite = shuffled[0];
+      let undercover = shuffled[1];
+      // apply restriction
+      if(opts.mrwhiteRestrictions === 'noFirst'){
+        if(mrwhite === players[0]) mrwhite = shuffled[2] || shuffled[0];
+      } else if(opts.mrwhiteRestrictions === 'noTwoFirst'){
+        if(players.length>=2 && (mrwhite===players[0]||mrwhite===players[1])) mrwhite = shuffled.find(p => p!==players[0] && p!==players[1]) || mrwhite;
       }
 
-      // 🔹 Agregar jugador a la sala
-      async function addPlayer() {
-        const name = playerInput.value.trim();
-        if (!name) return alert("⚠️ Escribe un nombre");
-        if (!gameId) return alert("🎮 Primero crea o únete a una sala");
+      // assign roles & words
+      for(const p of players){
+        let role='civil', word = pair[0];
+        if(p === undercover){ role='undercover'; word = pair[1]; }
+        if(p === mrwhite){ role='mrwhite'; word = '???'; }
+        await update(ref(db, `games/${gameId}/players/${p}`), { role, word });
+      }
 
-        playerName = name;
-        localStorage.setItem("playerName", name);
+      // prepare reveal order and speak order (random)
+      const revealOrder = [...players].sort(()=>Math.random()-0.5);
+      const speakOrder = [...players].sort(()=>Math.random()-0.5);
+      await update(ref(db, `games/${gameId}`), {
+        state: 'reveal',
+        revealOrder,
+        revealIndex: 0,
+        speakOrder,
+        spoken: {},
+        votes: {},
+        lastEliminated: null,
+        round: (await get(ref(db, `games/${gameId}/round`))).val() ? (await get(ref(db, `games/${gameId}/round`))).val()+1 : 1
+      });
+    }
 
-        await update(ref(db, `games/${gameId}/players/${name}`), {
-          name,
-          alive: true,
-        });
+    // ---------- Host avanza la revelación (siguiente jugador ve su palabra) ----------
+    async function hostNextReveal(){
+      if(!isHost) return;
+      const snap = await get(ref(db, `games/${gameId}`));
+      const g = snap.val();
+      const idx = (g.revealIndex || 0) + 1;
+      if(idx >= (g.revealOrder||[]).length){
+        // finished reveals -> go to speaking
+        await update(ref(db, `games/${gameId}`), { revealIndex: idx, state: 'speaking' });
+      } else {
+        await update(ref(db, `games/${gameId}`), { revealIndex: idx });
+      }
+    }
 
-        const snap = await get(ref(db, `games/${gameId}/host`));
-        if (!snap.exists()) {
-          await set(ref(db, `games/${gameId}/host`), name);
-          alert(`👑 Eres el host de la sala #${gameId}`);
+    // ---------- Host inicia speaking o marca hablante hecho ----------
+    async function hostMarkSpoken(){
+      if(!isHost) return;
+      const snap = await get(ref(db, `games/${gameId}`));
+      const g = snap.val();
+      const spoken = g.spoken || {};
+      const order = g.speakOrder || [];
+      const next = order.find(p => !spoken[p]);
+      if(next) {
+        spoken[next] = true;
+        await update(ref(db, `games/${gameId}/spoken`), spoken);
+      }
+      // check if all spoken
+      const still = order.find(p => !spoken[p]);
+      if(!still){
+        await update(ref(db, `games/${gameId}`), { state: 'voting' });
+      } else {
+        await update(ref(db, `games/${gameId}`), { spoken });
+      }
+    }
+
+    // ---------- Render estado del juego ----------
+    function renderGameState(game){
+      const state = game.state || 'waiting';
+      $('stateLabel').textContent = state.toUpperCase();
+
+      // show/hide panels
+      $('panelWaiting').classList.toggle('hidden', state!=='waiting');
+      $('panelReveal').classList.toggle('hidden', state!=='reveal');
+      $('panelSpeak').classList.toggle('hidden', state!=='speaking');
+      $('panelVoting').classList.toggle('hidden', state!=='voting');
+      $('panelEnded').classList.toggle('hidden', state!=='ended');
+
+      // reveal: only show word to the current reveal player
+      if(state === 'reveal'){
+        const order = game.revealOrder || [];
+        const idx = game.revealIndex || 0;
+        const current = order[idx];
+        if(playerName === current){
+          // show your word
+          const myWord = game.players && game.players[playerName] && game.players[playerName].word;
+          $('myWordText').textContent = myWord ? `Tu palabra: ${myWord}` : 'No asignada';
+          $('myWordBox').classList.remove('hidden');
+        } else {
+          $('myWordBox').classList.add('hidden');
         }
-
-        playerInput.value = "";
+        // host controls visible
+        $('hostControls').classList.toggle('hidden', !isHost);
       }
 
-      // 🔹 Escuchar cambios del juego
-      function listenGame() {
-        const gameRef = ref(db, `games/${gameId}`);
-        onValue(gameRef, (snap) => {
-          const data = snap.val();
-          if (!data) return;
-          const players = data.players || {};
-          renderPlayers(players);
-        });
+      // speaking: show who is next to speak
+      if(state === 'speaking'){
+        const order = game.speakOrder || [];
+        const spoken = game.spoken || {};
+        const next = order.find(p => !spoken[p]);
+        $('speakNext').textContent = next ? `Turno para: ${next}` : 'Todos hablaron';
+        $('hostControls').classList.toggle('hidden', !isHost);
+        $('myWordBox').classList.add('hidden'); // hide word during speaking
       }
 
-      // 🔹 Mostrar jugadores conectados
-      function renderPlayers(players) {
-        const list = Object.values(players)
-          .map((p) => `<li class="text-fuchsia-300">👤 ${p.name}</li>`)
-          .join("");
-        playersList.innerHTML = list || "<li class='text-gray-500'>Sin jugadores aún...</li>";
+      // voting: render vote buttons (if not anonymous -> show names; if anonymous -> also use same but votes stored)
+      if(state === 'voting'){
+        const players = game.players || {};
+        const alive = Object.keys(players).filter(p => players[p].alive);
+        const opts = game.options || {};
+        // render voting buttons
+        $('votingButtons').innerHTML = alive.map(p => `<button class="voteButton bg-red-600 px-3 py-2 rounded m-1" onclick="castVote('${p}')">${p}</button>`).join('');
+        $('hostVotingControls').classList.toggle('hidden', !isHost);
       }
 
-      // Eventos de botones
-      createBtn.addEventListener("click", createGame);
-      joinBtn.addEventListener("click", joinGame);
-      enterBtn.addEventListener("click", addPlayer);
+      // ended: show result
+      if(state === 'ended'){
+        $('endText').textContent = game.result || 'Partida finalizada';
+      }
 
-      // Reentrar si ya había sesión guardada
-      if (gameId) listenGame();
-    </script>
-  </head>
+      // last eliminated
+      if(game.lastEliminated){
+        $('lastElim').textContent = `${game.lastEliminated.name} — rol: ${game.lastEliminated.role}`;
+      }
+    }
 
-  <body
-    class="min-h-screen bg-gradient-to-br from-black via-purple-950 to-gray-900 text-white flex flex-col items-center justify-center font-sans"
-  >
-    <!-- NAV -->
-    <header
-      class="w-full bg-gray-900/60 backdrop-blur-lg shadow-md p-4 fixed top-0"
-    >
-      <nav class="flex justify-center space-x-8 text-purple-300 font-semibold">
-        <a href="#" class="hover:text-fuchsia-400 transition">🏠 Home</a>
-        <a href="#" class="hover:text-fuchsia-400 transition">ℹ️ About</a>
-        <a href="#" class="hover:text-fuchsia-400 transition">📩 Contact</a>
-      </nav>
+    // ---------- votar (player) ----------
+    async function castVote(target){
+      if(!playerName) return alert('Regístrate antes de votar');
+      if(!gameId) return;
+      await update(ref(db, `games/${gameId}/votes/${playerName}`), target);
+      alert('Votado por ' + target);
+    }
+
+    // ---------- host confirma votos (tally) ----------
+    async function hostConfirmVotes(){
+      if(!isHost) return;
+      const snap = await get(ref(db, `games/${gameId}`));
+      const g = snap.val();
+      const votes = g.votes || {};
+      if(Object.keys(votes).length === 0) return alert('No hay votos aún');
+      // tally
+      const tally = {};
+      Object.values(votes).forEach(v => tally[v] = (tally[v]||0)+1 );
+      let max = -1, chosen = null;
+      for(const [k,v] of Object.entries(tally)){
+        if(v > max){ max = v; chosen = k; }
+      }
+      if(!chosen) return alert('No se pudo determinar');
+      // eliminate
+      const pSnap = await get(ref(db, `games/${gameId}/players/${chosen}`));
+      const p = pSnap.val();
+      if(!p) return;
+      await update(ref(db, `games/${gameId}/players/${chosen}`), { alive: false });
+      await update(ref(db, `games/${gameId}`), { lastEliminated: { name: chosen, role: p.role || 'unknown' } });
+      // clear votes
+      await set(ref(db, `games/${gameId}/votes`), {});
+      // if mrwhite eliminated -> let them guess via UI
+      if(p.role === 'mrwhite'){
+        await update(ref(db, `games/${gameId}`), { state: 'mrwhite_guess', mrwhiteToGuess: chosen });
+      } else {
+        await checkWinnerAndNext();
+      }
+    }
+
+    // ---------- mrwhite guess (if eliminated) ----------
+    async function mrwhiteGuessSubmit(){
+      const guess = $('mrwhiteGuess').value.trim();
+      if(!guess) return alert('Escribe una palabra');
+      const snap = await get(ref(db, `games/${gameId}`));
+      const g = snap.val();
+      // find civil base word (first non ???)
+      let base = null;
+      for(const [k,v] of Object.entries(g.players||{})){
+        if(v.word && v.word !== '???'){ base = v.word; break; }
+      }
+      if(base && guess.toLowerCase() === base.toLowerCase()){
+        await update(ref(db, `games/${gameId}`), { state: 'ended', result: `Mr White adivinó y gana: ${guess}` });
+        return;
+      } else {
+        alert('Falló la adivinanza. El juego continúa');
+        await update(ref(db, `games/${gameId}`), { mrwhiteToGuess: null, state: 'continue_after_mrwhite' });
+        await checkWinnerAndNext();
+      }
+    }
+
+    // ---------- check winners & next round ----------
+    async function checkWinnerAndNext(){
+      const snap = await get(ref(db, `games/${gameId}`));
+      const g = snap.val();
+      const players = g.players || {};
+      const alive = Object.keys(players).filter(p => players[p].alive);
+      const underAlive = alive.find(p => players[p].role === 'undercover');
+      const whiteAlive = alive.find(p => players[p].role === 'mrwhite');
+
+      if(!underAlive && !whiteAlive){
+        await update(ref(db, `games/${gameId}`), { state: 'ended', result: 'Civiles ganaron' });
+        return;
+      }
+      if(alive.length <= 2 && (underAlive || whiteAlive)){
+        await update(ref(db, `games/${gameId}`), { state: 'ended', result: 'Undercover/MrWhite ganaron' });
+        return;
+      }
+
+      // prepare next round (alive players)
+      const aliveOrder = alive.sort(()=>Math.random()-0.5);
+      await update(ref(db, `games/${gameId}`), {
+        state: 'reveal',
+        revealOrder: aliveOrder,
+        revealIndex: 0,
+        speakOrder: aliveOrder.map(x=>x).sort(()=>Math.random()-0.5),
+        spoken: {},
+        votes: {},
+        lastEliminated: null,
+        round: (g.round||0) + 1
+      });
+    }
+
+    // ---------- utility / UI render ----------
+    function renderUI(){
+      $('roomControls').classList.toggle('hidden', !!gameId);
+      $('inRoomControls').classList.toggle('hidden', !gameId);
+      $('roomId').textContent = gameId || '—';
+      $('youName').textContent = playerName ? `Tú: ${playerName}` : '';
+      $('hostBadge').classList.toggle('hidden', !isHost);
+    }
+
+    // ---------- wire to window ----------
+    window.createRoom = createRoom;
+    window.joinRoom = joinRoom;
+    window.addPlayer = addPlayer;
+    window.startGame = startGame;
+    window.hostNextReveal = hostNextReveal;
+    window.hostMarkSpoken = hostMarkSpoken;
+    window.castVote = castVote;
+    window.hostConfirmVotes = hostConfirmVotes;
+    window.mrwhiteGuessSubmit = mrwhiteGuessSubmit;
+    window.renderUI = renderUI;
+
+    // ---------- start listening if saved ----------
+    if(gameId) { listenGame(); renderUI(); }
+  </script>
+
+  <style>
+    .neon { text-shadow: 0 0 12px rgba(167,139,250,0.9); }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-black via-purple-950 to-gray-900 text-white flex items-center justify-center p-6">
+  <div class="w-full max-w-4xl bg-gray-900/80 rounded-2xl p-6 neon shadow-2xl">
+    <header class="flex items-center justify-between">
+      <h1 class="text-2xl font-extrabold text-fuchsia-400">🎭 Undercover - Online</h1>
+      <div class="text-sm text-gray-300">
+        Sala: <span id="roomId">—</span> · <span id="youName"></span>
+        <span id="hostBadge" class="ml-3 px-2 py-1 bg-yellow-500 rounded hidden text-black">HOST</span>
+      </div>
     </header>
 
-    <!-- MAIN -->
-    <main class="flex flex-col items-center mt-32 space-y-8 text-center">
-      <h1
-        class="text-4xl md:text-5xl font-extrabold text-fuchsia-400 drop-shadow-lg"
-      >
-        🎭 UNDERCOVER
-      </h1>
-      <p class="text-lg text-gray-300 max-w-md" id="statusText">
-        Esperando acción...
-      </p>
+    <main class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-6">
+      <!-- Left: Config / Lobby -->
+      <section class="col-span-1 bg-gray-800 p-4 rounded-lg">
+        <h3 class="font-semibold text-lg mb-2">Nueva Partida</h3>
 
-      <div class="flex gap-4">
-        <button
-          id="createRoom"
-          class="bg-green-600 hover:bg-green-700 px-6 py-3 rounded-lg text-lg font-bold transition transform hover:scale-105"
-        >
-          🟢 Crear sala
-        </button>
-        <button
-          id="joinRoom"
-          class="bg-indigo-600 hover:bg-indigo-700 px-6 py-3 rounded-lg text-lg font-bold transition transform hover:scale-105"
-        >
-          🔵 Unirse a sala
-        </button>
-      </div>
+        <label class="text-sm text-gray-300">Paquete de palabras</label>
+        <select id="packSelect" class="w-full p-2 rounded bg-gray-700 mb-2">
+          <option>Animales</option>
+          <option>Comida</option>
+          <option>Objetos</option>
+        </select>
 
-      <form class="w-full max-w-sm space-y-3">
-        <input
-          id="username"
-          type="text"
-          placeholder="✍️ Tu nombre"
-          class="w-full p-3 rounded-lg bg-gray-800 text-white placeholder-gray-400 border border-gray-700 focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
-        />
-        <button
-          id="enterGame"
-          type="button"
-          class="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 p-3 rounded-lg font-semibold text-lg hover:from-fuchsia-600 hover:to-purple-600 transition transform hover:scale-105"
-        >
-          🚀 Entrar a partida
-        </button>
-      </form>
+        <label class="text-sm text-gray-300">Palabra personalizada (opcional)</label>
+        <input id="customWord" placeholder="Dejar vacío para usar paquete" class="w-full p-2 rounded bg-gray-700 mb-2"/>
 
-      <!-- Lista de jugadores -->
-      <ul id="playersList" class="space-y-1 text-left"></ul>
+        <label class="flex items-center gap-2"><input id="anonVote" type="checkbox" checked/> Votación anónima</label>
+        <label class="block mt-2 text-sm">¿Quién puede ser Mr White?</label>
+        <select id="mrwhiteRestrict" class="w-full p-2 rounded bg-gray-700 mb-3">
+          <option value="any">Cualquiera</option>
+          <option value="noFirst">No el primer jugador</option>
+          <option value="noTwoFirst">No los dos primeros</option>
+        </select>
+
+        <div id="roomControls" class="space-y-2">
+          <button onclick="createRoom()" class="w-full bg-green-600 p-2 rounded">🟢 Crear sala</button>
+          <button onclick="joinRoom()" class="w-full bg-indigo-600 p-2 rounded">🔵 Unirse a sala</button>
+        </div>
+
+        <div id="inRoomControls" class="hidden space-y-2">
+          <input id="username" placeholder="Tu nombre" class="w-full p-2 rounded bg-gray-700"/>
+          <button id="btnAdd" onclick="addPlayer()" class="w-full bg-purple-600 p-2 rounded">➕ Entrar a la sala</button>
+        </div>
+
+        <hr class="my-3 border-gray-700"/>
+
+        <h4 class="text-sm text-gray-300">Jugadores</h4>
+        <ul id="playersList" class="text-left mt-2 text-purple-200"></ul>
+      </section>
+
+      <!-- Middle: Flow / Controls -->
+      <section class="col-span-1 md:col-span-2 bg-gray-800 p-4 rounded-lg">
+        <div class="flex justify-between items-center mb-3">
+          <div>
+            <div class="text-xs text-gray-400">Estado</div>
+            <div id="stateLabel" class="font-semibold text-lg">WAITING</div>
+          </div>
+          <div class="text-right">
+            <div class="text-xs text-gray-400">Ronda</div>
+            <div id="roundLabel">—</div>
+          </div>
+        </div>
+
+        <!-- Waiting -->
+        <div id="panelWaiting" class="">
+          <p class="text-gray-300">Cuando todos estén listos, el host puede iniciar la partida.</p>
+          <div class="mt-3" id="hostControls">
+            <button onclick="startGame()" class="bg-yellow-500 p-2 rounded">🚀 Iniciar partida</button>
+          </div>
+        </div>
+
+        <!-- Reveal panel -->
+        <div id="panelReveal" class="hidden">
+          <div id="myWordBox" class="hidden p-3 bg-gray-900 rounded mb-3">
+            <div class="text-sm text-gray-400">Palabra privada</div>
+            <div id="myWordText" class="text-2xl font-bold text-yellow-300 mt-1"></div>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="hostNextReveal()" class="bg-blue-600 p-2 rounded" id="btnHostNextReveal">⏭️ Siguiente revelación (Host)</button>
+            <button onclick="startGame()" class="bg-green-600 p-2 rounded" id="btnHostStartSpeaking" style="display:none">▶ Iniciar speaking</button>
+          </div>
+        </div>
+
+        <!-- Speaking panel -->
+        <div id="panelSpeak" class="hidden">
+          <div class="p-3 bg-gray-900 rounded mb-3">
+            <div class="text-sm text-gray-400">Siguiente hablante</div>
+            <div id="speakNext" class="text-xl font-semibold text-purple-200 mt-1">—</div>
+            <div class="text-xs text-gray-500">El host marcará cuando termine cada hablante.</div>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="hostMarkSpoken()" class="bg-indigo-600 p-2 rounded">✅ Marcar hablado (host)</button>
+            <button onclick="update(ref(db, 'games/' + (localStorage.getItem('gameId')||'')), { state: 'voting' })" class="bg-pink-600 p-2 rounded">🗳️ Forzar votación</button>
+          </div>
+        </div>
+
+        <!-- Voting panel -->
+        <div id="panelVoting" class="hidden">
+          <div class="p-2 bg-gray-900 rounded mb-3">
+            <div id="votingButtons" class="flex flex-wrap"></div>
+          </div>
+          <div class="flex gap-2">
+            <div id="hostVotingControls" class="hidden">
+              <button onclick="hostConfirmVotes()" class="bg-red-600 p-2 rounded">🔴 Confirmar votos/Eliminar</button>
+            </div>
+          </div>
+          <div class="mt-3 text-sm text-gray-300">Votación sincronizada. Si estás en modo anónimo, pasa el teléfono para votar.</div>
+        </div>
+
+        <!-- mrwhite guess UI -->
+        <div id="panelMrWhite" class="hidden mt-3">
+          <div class="p-3 bg-gray-900 rounded">
+            <div class="text-sm text-gray-400">Mr. White eliminado: puede intentar adivinar la palabra</div>
+            <input id="mrwhiteGuess" placeholder="Escribe tu adivinanza" class="w-full p-2 mt-2 rounded bg-gray-800"/>
+            <div class="flex gap-2 mt-2">
+              <button onclick="mrwhiteGuessSubmit()" class="bg-emerald-600 p-2 rounded">🔎 Enviar adivinanza</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- End -->
+        <div id="panelEnded" class="hidden mt-3">
+          <div id="endText" class="p-3 bg-gray-900 rounded text-center"></div>
+        </div>
+
+        <div class="mt-4 text-sm text-gray-400">Último eliminado: <span id="lastElim">—</span></div>
+      </section>
     </main>
+  </div>
 
-    <footer class="mt-16 text-gray-500 text-sm">Hecho con 💜 por OCK</footer>
-  </body>
+  <script>
+    // expose small helpers used inline (only minimal)
+    window.update = (refObj, data)=> { /* noop placeholder for in-page debug buttons */ };
+  </script>
+</body>
 </html>
